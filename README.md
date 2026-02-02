@@ -69,14 +69,14 @@ pip install agent-memfas[all]            # Everything
 cd ~/my-agent && memfas init
 
 # Add keyword triggers (Type 1)
-memfas remember family --hint "Wife Xu, daughters Veronica & Oumi"
-memfas remember project --hint "Building agent-memfas memory system"
+memfas remember alice --hint "Project manager, prefers async communication"
+memfas remember acme --hint "Client project, due Q2, React frontend"
 
 # Index your memory files (Type 2)
 memfas index ./MEMORY.md ./memory/
 
 # Recall context
-memfas recall "How's the family?"
+memfas recall "What did Alice say about the deadline?"
 # → Returns triggered + searched memories
 ```
 
@@ -89,14 +89,14 @@ from agent_memfas import Memory
 mem = Memory("./memfas.yaml")
 
 # Type 1: Instant triggers
-mem.add_trigger("family", "User's family context")
+mem.add_trigger("alice", "Project manager, prefers async")
 
 # Type 2: Index and search
 mem.index_file("./MEMORY.md")
 results = mem.search("preference learning", limit=5)
 
 # Combined recall
-context = mem.recall("How's the family?")
+context = mem.recall("What did Alice say about the deadline?")
 print(context)  # Ready to inject into LLM prompt
 ```
 
@@ -190,8 +190,8 @@ sources:
     type: markdown
 
 triggers:
-  - keyword: family
-    hint: "User's family context"
+  - keyword: alice
+    hint: "Project manager, prefers async"
   - keyword: work
     hint: "Current projects"
 
@@ -232,9 +232,9 @@ search:
 ### Type 1: Keyword Triggers (Fast Path)
 
 ```
-Input: "How's the family doing?"
+Input: "What's the status on the acme project?"
          ↓
-Trigger table scan: "family" → match!
+Trigger table scan: "alice" → match!
          ↓
 Return hint + linked memories instantly
 ```
