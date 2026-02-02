@@ -28,13 +28,33 @@ memfas recall "what's happening at work?"
 
 | Type 1 (Fast) | Type 2 (Slow) |
 |---------------|---------------|
-| Keyword triggers | Full-text search |
-| O(1) lookup | BM25 ranking |
+| Keyword triggers | Pluggable search |
+| O(1) lookup | FTS5 or embeddings |
 | "family" → instant hit | "preference learning" → search |
 | You define triggers | Searches indexed content |
 | Like muscle memory | Like thinking hard |
 
 **Rule of thumb**: If you ask about it often, make it a trigger.
+
+## Search Backends (v0.2+)
+
+### FTS5 (Default)
+Zero dependencies, uses SQLite's built-in full-text search with BM25 ranking.
+
+### Embeddings (Optional)
+Semantic search using local models. Great for finding conceptually related content.
+
+```bash
+# Install embedding support
+pip install agent-memfas[embeddings]
+
+# Migrate existing data to embeddings
+memfas reindex -b embedding -e fastembed --save-config
+```
+
+**Available embedders:**
+- `fastembed` — BAAI/bge-small-en-v1.5 (384 dims, ~130MB, runs on CPU)
+- `ollama` — nomic-embed-text (768 dims, requires Ollama running)
 
 ## Setting Up Triggers
 
@@ -62,27 +82,32 @@ memfas remember "what were we" --hint "[Current project/task summary]"
 
 ## Auto-Generating Triggers
 
-### Method 1: Extract from Indexed Content
+### Method 1: Built-in Suggest Command
+```bash
+# Auto-suggest triggers based on indexed content
+memfas suggest
+
+# Output:
+# 💡 Suggested triggers (min 3 occurrences):
+# 
+# Entities (proper nouns):
+#   memfas remember alice --hint "..."  # 5x
+#   memfas remember project --hint "..."  # 4x
+# 
+# Frequent terms:
+#   memfas remember machine --hint "..."  # 7x
+#   memfas remember learning --hint "..."  # 6x
+```
+
+### Method 2: Python API
 ```python
-from agent_memfas import Memory, Config
-from collections import Counter
-import re
+from agent_memfas import Memory
 
-mem = Memory(Config.load("./memfas.json"))
-conn = mem._get_conn()
-cur = conn.cursor()
+mem = Memory("./memfas.yaml")
+suggestions = mem.suggest_triggers(min_occurrences=3, limit=20)
 
-# Get all indexed text
-cur.execute("SELECT text FROM memories")
-all_text = " ".join(row[0] for row in cur.fetchall())
-
-# Find frequent capitalized words (likely entities)
-words = re.findall(r'\b[A-Z][a-z]+\b', all_text)
-common = Counter(words).most_common(20)
-print("Suggested triggers (frequent entities):")
-for word, count in common:
-    if count > 2:
-        print(f"  {word.lower()} ({count} occurrences)")
+for s in suggestions:
+    print(f"memfas remember {s['term']} --hint '...'  # {s['count']}x ({s['type']})")
 ```
 
 ### Method 2: Promote Hot Searches
@@ -227,21 +252,38 @@ memfas stats
 
 ## Config Reference
 
+```yaml
+# memfas.yaml
+db_path: ./memfas.db
+
+sources:
+  - path: ./MEMORY.md
+    type: markdown
+  - path: ./memory/*.md
+    type: markdown
+
+triggers:
+  - keyword: work
+    hint: Current job context
+
+search:
+  backend: fts5          # or "embedding"
+  max_results: 5
+  recency_weight: 0.3
+  min_score: 0.0
+  
+  # For embedding backend:
+  # embedder_type: fastembed
+  # embedder_model: BAAI/bge-small-en-v1.5
+```
+
+Or JSON:
 ```json
 {
   "db_path": "./memfas.db",
-  "sources": [
-    {"path": "./MEMORY.md", "type": "markdown"},
-    {"path": "./memory/*.md", "type": "markdown"},
-    {"path": "./notes.json", "type": "json"}
-  ],
-  "triggers": [
-    {"keyword": "work", "hint": "Current job context"}
-  ],
   "search": {
-    "max_results": 5,
-    "recency_weight": 0.3,
-    "min_score": 0.0
+    "backend": "embedding",
+    "embedder_type": "fastembed"
   }
 }
 ```
