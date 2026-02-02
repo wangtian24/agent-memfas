@@ -53,6 +53,19 @@ class Config:
     triggers_file: Optional[str] = None
     search: SearchConfig = field(default_factory=SearchConfig)
     
+    def __post_init__(self):
+        """Convert dicts to proper config objects."""
+        self.sources = [
+            SourceConfig(**s) if isinstance(s, dict) else s
+            for s in self.sources
+        ]
+        self.triggers = [
+            TriggerConfig(**t) if isinstance(t, dict) else t
+            for t in self.triggers
+        ]
+        if isinstance(self.search, dict):
+            self.search = SearchConfig(**self.search)
+    
     @classmethod
     def load(cls, path: str) -> "Config":
         """Load configuration from YAML or JSON file."""
