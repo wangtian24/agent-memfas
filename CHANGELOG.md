@@ -2,7 +2,53 @@
 
 All notable changes to agent-memfas will be documented in this file.
 
-## [0.2.0] - 2025-02-02
+## [0.3.1] - 2026-02-02
+
+### Added
+
+- **Curation levels 1-5** — Slider for controlling context aggressiveness
+  - Level 1 (minimal): ~300 tokens, threshold 0.75
+  - Level 2 (lean): ~800 tokens, threshold 0.55
+  - Level 3 (balanced): ~1500 tokens, threshold 0.40 — **default**
+  - Level 4 (rich): ~3000 tokens, threshold 0.25
+  - Level 5 (full): ~5000 tokens, threshold 0.10
+- **Level names** — Use `"balanced"` or `3` interchangeably
+- **`level="auto"`** — Defaults to 3, ready for smart auto-selection
+- **Per-query level override** — `get_context(query, level=4)`
+- **CLI level support** — `memfas curate --level 2`
+- **`--describe-levels`** — Show level descriptions
+
+### Changed
+
+- `ContextCurator.__init__` accepts `level` parameter
+- `ContextResponse` includes `curation_level` and `curation_level_name`
+- `TurnMetrics` tracks level and min_score_threshold
+
+## [0.3.0] - 2026-02-02
+
+### Added
+
+- **v3: Dynamic Context Curation** — Proactive memory curation each turn
+- **ContextCurator** — Main entry point for v3 API
+- **Topic detection** — Tracks conversation topic and shifts
+- **Multi-factor scoring** — Semantic, recency, access, topic coherence
+- **Token budget management** — Fill budget with highest-value memories
+- **Session state** — Track per-session context across turns
+- **Telemetry logging** — JSONL logs for performance analysis
+- **84% token reduction** — Compared to loading all memories
+
+### Usage
+
+```python
+from agent_memfas.v3 import ContextCurator
+
+curator = ContextCurator("./memfas.yaml", level=3)
+result = curator.get_context("what's the status?", session_id="main")
+print(result.context)  # Curated context to inject
+print(result.tokens_saved)  # How much we saved
+```
+
+## [0.2.0] - 2026-02-02
 
 ### Added
 
