@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-memfas"
-version = "0.2.0"
+version = "0.3.0"
 description = "Memory Fast and Slow for AI Agents - dual-store memory with keyword triggers and pluggable search"
 readme = "README.md"
 license = {text = "MIT"}
@@ -27,7 +27,6 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-yaml = ["pyyaml>=6.0"]
 embeddings = [
     "fastembed>=0.2.0",
     "sqlite-vec>=0.1.0",
@@ -36,15 +35,22 @@ ollama = [
     "requests>=2.28.0",
     "sqlite-vec>=0.1.0",
 ]
+v3 = [
+    "tiktoken>=0.5.0",
+    "fastembed>=0.2.0",
+    "sqlite-vec>=0.1.0",
+]
 all = [
     "pyyaml>=6.0",
     "fastembed>=0.2.0",
     "sqlite-vec>=0.1.0",
     "requests>=2.28.0",
+    "tiktoken>=0.5.0",
 ]
 dev = [
     "pytest>=7.0",
     "pyyaml>=6.0",
+    "tiktoken>=0.5.0",
 ]
 
 [project.scripts]

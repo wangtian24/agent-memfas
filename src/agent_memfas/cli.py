@@ -269,6 +269,111 @@ def cmd_reindex(args):
     mem.close()
 
 
+def cmd_curate(args):
+    """[v3] Get curated context for a query."""
+    try:
+        from .v3 import ContextCurator
+    except ImportError as e:
+        print(f"v3 dependencies not available: {e}")
+        print("Install with: pip install agent-memfas[v3]")
+        sys.exit(1)
+    
+    import json as json_lib
+    
+    query = " ".join(args.query)
+    
+    curator = ContextCurator(
+        args.config,
+        token_budget=args.budget
+    )
+    
+    result = curator.get_context(
+        query=query,
+        session_id=args.session,
+        baseline_tokens=args.baseline
+    )
+    
+    if args.json:
+        print(json_lib.dumps({
+            "context": result.context,
+            "tokens_used": result.tokens_used,
+            "budget": result.budget,
+            "memories_included": result.memories_included,
+            "memories_dropped": result.memories_dropped,
+            "triggers_matched": result.triggers_matched,
+            "topic": result.topic,
+            "topic_shifted": result.topic_shifted,
+            "baseline_tokens": result.baseline_tokens,
+            "tokens_saved": result.tokens_saved,
+            "compression_ratio": result.compression_ratio,
+            "latency_ms": result.latency_ms
+        }, indent=2))
+    else:
+        print(f"📚 Curated Context ({result.tokens_used} tokens, {result.latency_ms:.1f}ms)")
+        print("=" * 60)
+        print(result.context)
+        print("=" * 60)
+        print(f"\nTopic: {result.topic}" + (" [SHIFTED]" if result.topic_shifted else ""))
+        print(f"Memories: {result.memories_included} included, {result.memories_dropped} dropped")
+        print(f"Triggers: {result.triggers_matched} matched")
+        if args.baseline > 0:
+            print(f"\nSavings: {result.tokens_saved:,} tokens ({(1-result.compression_ratio)*100:.1f}% reduction)")
+    
+    curator.close()
+
+
+def cmd_telemetry_summary(args):
+    """Show telemetry summary."""
+    from .v3 import TelemetryLogger
+    
+    telem = TelemetryLogger()
+    summary = telem.get_summary(
+        session_id=getattr(args, 'session', None),
+        last_n_turns=getattr(args, 'last', None)
+    )
+    
+    print(telem.format_summary(summary))
+
+
+def cmd_telemetry_show(args):
+    """Show recent telemetry entries."""
+    from .v3 import TelemetryLogger
+    import json as json_lib
+    
+    telem = TelemetryLogger()
+    entries = telem._read_entries(session_id=getattr(args, 'session', None))
+    
+    if not entries:
+        print("No telemetry data found.")
+        return
+    
+    # Show last N entries
+    for entry in entries[-args.limit:]:
+        if entry.get("type") == "turn":
+            print(f"[{entry['timestamp'][:19]}] {entry['session_id']} turn #{entry['turn_number']}")
+            print(f"  Query: {entry['query'][:60]}...")
+            print(f"  Topic: {entry['detected_topic']}")
+            print(f"  Tokens: {entry['curated_context_tokens']} (saved {entry['tokens_saved']})")
+            print(f"  Memories: {entry['memories_included']} included")
+            print(f"  Latency: {entry['latency_ms']:.1f}ms")
+            print()
+
+
+def cmd_telemetry_clear(args):
+    """Clear telemetry log."""
+    from .v3 import TelemetryLogger
+    
+    if not args.yes:
+        confirm = input("Clear all telemetry data? [y/N] ")
+        if confirm.lower() != 'y':
+            print("Aborted.")
+            return
+    
+    telem = TelemetryLogger()
+    telem.clear()
+    print("✓ Telemetry cleared.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Memory Fast and Slow for AI Agents",
@@ -342,6 +447,33 @@ def main():
     p_reindex.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
     p_reindex.add_argument("--save-config", action="store_true", help="Update config file")
     p_reindex.set_defaults(func=cmd_reindex)
+    
+    # curate (v3)
+    p_curate = subparsers.add_parser("curate", help="[v3] Get curated context for a query")
+    p_curate.add_argument("query", nargs="+", help="Query to curate context for")
+    p_curate.add_argument("-b", "--budget", type=int, default=8000, help="Token budget")
+    p_curate.add_argument("--baseline", type=int, default=0, help="Baseline context tokens (for comparison)")
+    p_curate.add_argument("-s", "--session", default="cli", help="Session ID")
+    p_curate.add_argument("--json", action="store_true", help="Output as JSON")
+    p_curate.set_defaults(func=cmd_curate)
+    
+    # telemetry
+    p_telem = subparsers.add_parser("telemetry", help="[v3] View telemetry data")
+    p_telem_sub = p_telem.add_subparsers(dest="telem_cmd")
+    
+    p_telem_summary = p_telem_sub.add_parser("summary", help="Show summary statistics")
+    p_telem_summary.add_argument("-s", "--session", help="Filter by session ID")
+    p_telem_summary.add_argument("-n", "--last", type=int, help="Last N turns")
+    p_telem_summary.set_defaults(func=cmd_telemetry_summary)
+    
+    p_telem_show = p_telem_sub.add_parser("show", help="Show recent telemetry entries")
+    p_telem_show.add_argument("-n", "--limit", type=int, default=10, help="Number of entries")
+    p_telem_show.add_argument("-s", "--session", help="Filter by session ID")
+    p_telem_show.set_defaults(func=cmd_telemetry_show)
+    
+    p_telem_clear = p_telem_sub.add_parser("clear", help="Clear telemetry log")
+    p_telem_clear.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    p_telem_clear.set_defaults(func=cmd_telemetry_clear)
     
     args = parser.parse_args()
     
