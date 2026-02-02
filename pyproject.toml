@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-memfas"
-version = "0.3.0"
+version = "0.3.1"
 description = "Memory Fast and Slow for AI Agents - dual-store memory with keyword triggers and pluggable search"
 readme = "README.md"
 license = {text = "MIT"}

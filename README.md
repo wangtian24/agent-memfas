@@ -24,30 +24,18 @@ Agent: "I apologize, but I don't have context about what project..."
 
 ## ✨ Features at a Glance
 
-### 🧠 Dual-Store Memory (v0.1+)
-| Type | Speed | Use Case |
-|------|-------|----------|
-| **Type 1 (Fast)** | O(1) | Keyword triggers → instant recall |
-| **Type 2 (Slow)** | O(log n) | Full-text search with BM25 ranking |
-
-### 🔌 Pluggable Search Backends (v0.2+)
-| Backend | Dependencies | Best For |
-|---------|-------------|----------|
-| **FTS5** | None (SQLite built-in) | Keyword matching, low resources |
-| **Embeddings** | fastembed, sqlite-vec | Semantic search, "find similar" |
-
-### 🎯 Dynamic Context Curation (v0.3+)
-| Feature | Benefit |
-|---------|---------|
-| **Topic Detection** | Understands what you're talking about |
-| **Relevance Scoring** | Multi-factor: semantic + recency + access patterns |
-| **Token Budget** | Fills fixed budget with top memories |
-| **84% Token Reduction** | 50K baseline → 7.8K curated |
-
-### 📊 Telemetry & Analytics (v0.3+)
-- JSONL logging of every memory operation
-- Track compression ratios, latency, topic shifts
-- `memfas telemetry summary` for insights
+- **[v0.1]** Type 1 (Fast) — O(1) keyword triggers for instant recall
+- **[v0.1]** Type 2 (Slow) — FTS5 full-text search with BM25 ranking
+- **[v0.2]** Pluggable search backends — FTS5 or embeddings
+- **[v0.2]** Semantic search — FastEmbed or Ollama embeddings
+- **[v0.2]** Auto-suggest triggers from indexed content
+- **[v0.3]** Dynamic context curation — proactive memory selection each turn
+- **[v0.3]** Topic detection — tracks conversation topic and shifts
+- **[v0.3]** Multi-factor relevance scoring — semantic + recency + access patterns
+- **[v0.3]** Token budget management — fills budget with highest-value memories
+- **[v0.3]** 84% token reduction — 50K baseline → 7.8K curated
+- **[v0.3]** Telemetry — JSONL logging, compression stats, latency tracking
+- **[v0.3.1]** Curation levels 1-5 — slider from minimal to full context
 
 ---
 
