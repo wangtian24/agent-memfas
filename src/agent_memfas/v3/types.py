@@ -57,20 +57,25 @@ class ContextResponse:
     
     # What was included
     memories_included: int
-    memories_dropped: int
-    triggers_matched: int
+    memories_dropped: int  # Didn't fit in budget
+    memories_filtered: int = 0  # Below min_score threshold
+    triggers_matched: int = 0
     
     # Topic info
-    topic: str
-    topic_shifted: bool
+    topic: str = ""
+    topic_shifted: bool = False
     
     # Savings
-    baseline_tokens: int
-    tokens_saved: int
-    compression_ratio: float
+    baseline_tokens: int = 0
+    tokens_saved: int = 0
+    compression_ratio: float = 1.0
     
     # Performance
-    latency_ms: float
+    latency_ms: float = 0.0
+    
+    # Curation level
+    curation_level: int = 3
+    curation_level_name: str = "balanced"
     
     # Debug info
     top_memories: List[Dict[str, Any]] = field(default_factory=list)

@@ -28,15 +28,21 @@ class TurnMetrics:
     # Memory stats
     memories_scored: int
     memories_included: int
-    memories_dropped: int
-    triggers_matched: int
+    memories_dropped: int  # Didn't fit budget
+    memories_filtered: int = 0  # Below min_score threshold
+    triggers_matched: int = 0
     
     # Savings
-    tokens_saved: int
-    compression_ratio: float  # curated / baseline (lower = better)
+    tokens_saved: int = 0
+    compression_ratio: float = 1.0  # curated / baseline (lower = better)
     
     # Performance
-    latency_ms: float
+    latency_ms: float = 0.0
+    
+    # Curation level
+    curation_level: int = 3
+    curation_level_name: str = "balanced"
+    min_score_threshold: float = 0.4
     
     # Debug info
     top_memories: List[Dict[str, Any]] = field(default_factory=list)

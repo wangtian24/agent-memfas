@@ -272,7 +272,7 @@ def cmd_reindex(args):
 def cmd_curate(args):
     """[v3] Get curated context for a query."""
     try:
-        from .v3 import ContextCurator
+        from .v3 import ContextCurator, describe_levels
     except ImportError as e:
         print(f"v3 dependencies not available: {e}")
         print("Install with: pip install agent-memfas[v3]")
@@ -280,11 +280,24 @@ def cmd_curate(args):
     
     import json as json_lib
     
-    query = " ".join(args.query)
+    # Show level descriptions and exit
+    if getattr(args, 'describe_levels', False):
+        print(describe_levels())
+        return
+    
+    query = " ".join(args.query) if args.query else ""
+    
+    if not query:
+        print("Error: query required")
+        sys.exit(1)
+    
+    # Resolve level (CLI can pass int or string)
+    level = args.level
     
     curator = ContextCurator(
         args.config,
-        token_budget=args.budget
+        level=level,
+        token_budget=args.budget if args.budget else None  # Use preset if not specified
     )
     
     result = curator.get_context(
@@ -300,21 +313,25 @@ def cmd_curate(args):
             "budget": result.budget,
             "memories_included": result.memories_included,
             "memories_dropped": result.memories_dropped,
+            "memories_filtered": result.memories_filtered,
             "triggers_matched": result.triggers_matched,
             "topic": result.topic,
             "topic_shifted": result.topic_shifted,
             "baseline_tokens": result.baseline_tokens,
             "tokens_saved": result.tokens_saved,
             "compression_ratio": result.compression_ratio,
-            "latency_ms": result.latency_ms
+            "latency_ms": result.latency_ms,
+            "curation_level": result.curation_level,
+            "curation_level_name": result.curation_level_name
         }, indent=2))
     else:
-        print(f"📚 Curated Context ({result.tokens_used} tokens, {result.latency_ms:.1f}ms)")
+        level_info = f"level {result.curation_level} ({result.curation_level_name})"
+        print(f"📚 Curated Context ({result.tokens_used} tokens, {level_info}, {result.latency_ms:.1f}ms)")
         print("=" * 60)
         print(result.context)
         print("=" * 60)
         print(f"\nTopic: {result.topic}" + (" [SHIFTED]" if result.topic_shifted else ""))
-        print(f"Memories: {result.memories_included} included, {result.memories_dropped} dropped")
+        print(f"Memories: {result.memories_included} included, {result.memories_filtered} filtered, {result.memories_dropped} budget-dropped")
         print(f"Triggers: {result.triggers_matched} matched")
         if args.baseline > 0:
             print(f"\nSavings: {result.tokens_saved:,} tokens ({(1-result.compression_ratio)*100:.1f}% reduction)")
@@ -450,11 +467,17 @@ def main():
     
     # curate (v3)
     p_curate = subparsers.add_parser("curate", help="[v3] Get curated context for a query")
-    p_curate.add_argument("query", nargs="+", help="Query to curate context for")
-    p_curate.add_argument("-b", "--budget", type=int, default=8000, help="Token budget")
-    p_curate.add_argument("--baseline", type=int, default=0, help="Baseline context tokens (for comparison)")
+    p_curate.add_argument("query", nargs="*", help="Query to curate context for")
+    p_curate.add_argument("-l", "--level", default="auto", 
+                          help="Curation level: 1-5, or name (minimal/lean/balanced/rich/full/auto). Default: auto (=3)")
+    p_curate.add_argument("-b", "--budget", type=int, default=None, 
+                          help="Override token budget (default: use level preset)")
+    p_curate.add_argument("--baseline", type=int, default=0, 
+                          help="Baseline context tokens (for comparison)")
     p_curate.add_argument("-s", "--session", default="cli", help="Session ID")
     p_curate.add_argument("--json", action="store_true", help="Output as JSON")
+    p_curate.add_argument("--describe-levels", action="store_true", 
+                          help="Show level descriptions and exit")
     p_curate.set_defaults(func=cmd_curate)
     
     # telemetry
