@@ -118,7 +118,29 @@ Configurable chunk size for embeddings (current 100-char min is too small):
 
 ---
 
-## v0.4.0 — Advanced Features
+## v0.4.0 — MCP Server + Auto-Integration
+
+### 1. MCP Server
+Expose memfas as MCP tools for any agent framework:
+```python
+# memfas-mcp-server
+tools:
+  - get_context(query, token_budget) → curated context
+  - recall(query) → basic search
+  - add_trigger(keyword, hint) → add trigger
+```
+
+### 2. Clawdbot Integration
+- Auto-inject curated context each turn
+- No manual `recall` needed
+- Gateway plugin or hook
+
+### 3. Auto-Compaction Hook
+Detect when context is large → proactively curate before compaction hits.
+
+---
+
+## v0.5.0 — Advanced Features
 
 ### 1. Trigger Learning
 Auto-suggest promotions from frequent Type 2 queries:
