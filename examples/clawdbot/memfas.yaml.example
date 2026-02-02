@@ -1,0 +1,50 @@
+# Example memfas configuration for Clawdbot agents
+# Copy to your agent workspace as memfas.yaml
+
+db_path: ./memfas.db
+
+sources:
+  # Main long-term memory file
+  - path: ./MEMORY.md
+    type: markdown
+    always_load: false
+    
+  # Daily memory logs
+  - path: ./memory/*.md
+    type: markdown
+    always_load: false
+    
+  # Compressed key facts - always included
+  - path: ./intuition.md
+    type: markdown
+    always_load: true
+
+triggers:
+  # Family
+  - keyword: family
+    hint: "User's family members and relationships"
+  - keyword: wife
+    hint: "User's spouse"
+  - keyword: kids
+    hint: "User's children"
+    
+  # Work
+  - keyword: work
+    hint: "Current job and company"
+  - keyword: project
+    hint: "Active projects"
+    
+  # Preferences
+  - keyword: prefer
+    hint: "User preferences and opinions"
+  - keyword: favorite
+    hint: "User's favorites"
+    
+  # Meta
+  - keyword: remember
+    hint: "Things user asked to remember"
+
+search:
+  max_results: 5
+  recency_weight: 0.3
+  min_score: 0.1

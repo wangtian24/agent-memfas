@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""
+Command-line interface for agent-memfas.
+
+Usage:
+    memfas recall "How's the family?"
+    memfas search "preference learning"
+    memfas remember tahoe --hint "Family ski trips"
+    memfas forget tahoe
+    memfas triggers
+    memfas index ./memory/
+    memfas stats
+    memfas init
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+from .memory import Memory
+from .config import Config
+
+
+def cmd_recall(args):
+    """Recall memories for given context."""
+    mem = Memory(args.config)
+    result = mem.recall(" ".join(args.context))
+    if result:
+        print(result)
+    else:
+        print("No memories found.")
+    mem.close()
+
+
+def cmd_search(args):
+    """Search memories."""
+    mem = Memory(args.config)
+    results = mem.search(" ".join(args.query), limit=args.limit)
+    if results:
+        for r in results:
+            print(f"[{r.source}] (score: {r.score:.2f})")
+            print(f"  {r.text[:200]}...")
+            print()
+    else:
+        print("No results found.")
+    mem.close()
+
+
+def cmd_remember(args):
+    """Add a keyword trigger."""
+    mem = Memory(args.config)
+    mem.add_trigger(args.keyword, args.hint)
+    print(f"✓ Added trigger: [{args.keyword}] → {args.hint}")
+    mem.close()
+
+
+def cmd_forget(args):
+    """Remove a keyword trigger."""
+    mem = Memory(args.config)
+    mem.remove_trigger(args.keyword)
+    print(f"✓ Removed trigger: [{args.keyword}]")
+    mem.close()
+
+
+def cmd_triggers(args):
+    """List all triggers."""
+    mem = Memory(args.config)
+    triggers = mem.list_triggers()
+    if triggers:
+        print(f"{'Keyword':<20} {'Hint':<50}")
+        print("-" * 70)
+        for t in triggers:
+            print(f"{t['keyword']:<20} {t['hint']:<50}")
+    else:
+        print("No triggers defined.")
+    mem.close()
+
+
+def cmd_index(args):
+    """Index files or directories."""
+    mem = Memory(args.config)
+    
+    for path_str in args.paths:
+        path = Path(path_str)
+        if path.is_dir():
+            # Index all markdown files in directory
+            for f in path.glob("**/*.md"):
+                try:
+                    mem.index_file(str(f), "markdown")
+                    print(f"✓ Indexed: {f}")
+                except Exception as e:
+                    print(f"✗ Failed: {f} ({e})")
+        elif path.is_file():
+            try:
+                file_type = "markdown" if path.suffix == ".md" else "text"
+                mem.index_file(str(path), file_type)
+                print(f"✓ Indexed: {path}")
+            except Exception as e:
+                print(f"✗ Failed: {path} ({e})")
+        else:
+            print(f"✗ Not found: {path}")
+    
+    mem.close()
+
+
+def cmd_stats(args):
+    """Show memory statistics."""
+    mem = Memory(args.config)
+    stats = mem.stats()
+    print(f"Database: {stats['db_path']}")
+    print(f"Memories: {stats['memories']}")
+    print(f"Triggers: {stats['triggers']}")
+    print(f"Total chars: {stats['total_chars']:,}")
+    mem.close()
+
+
+def cmd_suggest(args):
+    """Suggest potential triggers based on indexed content."""
+    mem = Memory(args.config)
+    
+    suggestions = mem.suggest_triggers(min_occurrences=args.min, limit=args.limit)
+    
+    if not suggestions:
+        print("No suggestions found. Index some content first: memfas index <path>")
+        mem.close()
+        return
+    
+    print(f"💡 Suggested triggers (min {args.min} occurrences):\n")
+    
+    # Group by type
+    entities = [s for s in suggestions if s["type"] == "entity"]
+    phrases = [s for s in suggestions if s["type"] == "phrase"]
+    terms = [s for s in suggestions if s["type"] == "term"]
+    
+    if entities:
+        print("Entities (proper nouns):")
+        for s in entities[:7]:
+            print(f"  memfas remember {s['term']} --hint \"...\"  # {s['count']}x")
+    
+    if phrases:
+        print("\nPhrases:")
+        for s in phrases[:5]:
+            print(f"  memfas remember \"{s['term']}\" --hint \"...\"  # {s['count']}x")
+    
+    if terms:
+        print("\nFrequent terms:")
+        for s in terms[:8]:
+            print(f"  memfas remember {s['term']} --hint \"...\"  # {s['count']}x")
+    
+    mem.close()
+
+
+def cmd_init(args):
+    """Initialize memfas in current directory."""
+    config_path = Path(args.output or "memfas.yaml")
+    
+    if config_path.exists() and not args.force:
+        print(f"Config already exists: {config_path}")
+        print("Use --force to overwrite.")
+        return
+    
+    config = Config.default(".")
+    config.save(str(config_path))
+    print(f"✓ Created config: {config_path}")
+    
+    # Also create the database
+    mem = Memory(config)
+    mem.index_sources()
+    stats = mem.stats()
+    print(f"✓ Indexed {stats['memories']} memories from {len(config.sources)} sources")
+    mem.close()
+
+
+def cmd_clear(args):
+    """Clear all indexed memories."""
+    if not args.yes:
+        confirm = input("This will delete all indexed memories. Continue? [y/N] ")
+        if confirm.lower() != 'y':
+            print("Aborted.")
+            return
+    
+    mem = Memory(args.config)
+    mem.clear()
+    print("✓ Cleared all memories.")
+    mem.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Memory Fast and Slow for AI Agents",
+        prog="memfas"
+    )
+    parser.add_argument(
+        "-c", "--config",
+        default="memfas.yaml",
+        help="Path to config file (default: memfas.yaml)"
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    
+    # recall
+    p_recall = subparsers.add_parser("recall", help="Recall memories for context")
+    p_recall.add_argument("context", nargs="+", help="Context to recall for")
+    p_recall.set_defaults(func=cmd_recall)
+    
+    # search
+    p_search = subparsers.add_parser("search", help="Search memories")
+    p_search.add_argument("query", nargs="+", help="Search query")
+    p_search.add_argument("-n", "--limit", type=int, default=5, help="Max results")
+    p_search.set_defaults(func=cmd_search)
+    
+    # remember
+    p_remember = subparsers.add_parser("remember", help="Add a keyword trigger")
+    p_remember.add_argument("keyword", help="Keyword to trigger on")
+    p_remember.add_argument("--hint", "-H", required=True, help="Description/hint")
+    p_remember.set_defaults(func=cmd_remember)
+    
+    # forget
+    p_forget = subparsers.add_parser("forget", help="Remove a keyword trigger")
+    p_forget.add_argument("keyword", help="Keyword to remove")
+    p_forget.set_defaults(func=cmd_forget)
+    
+    # triggers
+    p_triggers = subparsers.add_parser("triggers", help="List all triggers")
+    p_triggers.set_defaults(func=cmd_triggers)
+    
+    # index
+    p_index = subparsers.add_parser("index", help="Index files or directories")
+    p_index.add_argument("paths", nargs="+", help="Files or directories to index")
+    p_index.set_defaults(func=cmd_index)
+    
+    # stats
+    p_stats = subparsers.add_parser("stats", help="Show statistics")
+    p_stats.set_defaults(func=cmd_stats)
+    
+    # init
+    p_init = subparsers.add_parser("init", help="Initialize memfas")
+    p_init.add_argument("-o", "--output", help="Config file path")
+    p_init.add_argument("-f", "--force", action="store_true", help="Overwrite existing")
+    p_init.set_defaults(func=cmd_init)
+    
+    # clear
+    p_clear = subparsers.add_parser("clear", help="Clear all indexed memories")
+    p_clear.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    p_clear.set_defaults(func=cmd_clear)
+    
+    # suggest
+    p_suggest = subparsers.add_parser("suggest", help="Suggest potential triggers from indexed content")
+    p_suggest.add_argument("-n", "--limit", type=int, default=15, help="Max suggestions")
+    p_suggest.add_argument("-m", "--min", type=int, default=3, help="Min occurrences")
+    p_suggest.set_defaults(func=cmd_suggest)
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+    
+    try:
+        args.func(args)
+    except FileNotFoundError as e:
+        # Config not found, try to auto-init
+        if "memfas.yaml" in str(e) and args.command not in ("init",):
+            print("No memfas.yaml found. Run 'memfas init' first, or specify --config.")
+            sys.exit(1)
+        raise
+    except KeyboardInterrupt:
+        print("\nAborted.")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

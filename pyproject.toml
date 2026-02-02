@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-memfas"
+version = "0.1.0"
+description = "Memory Fast and Slow for AI Agents - dual-store memory with keyword triggers and FTS5 search"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Tian Wang"},
+]
+keywords = ["ai", "agent", "memory", "llm", "rag"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6.0"]
+dev = ["pytest>=7.0", "pyyaml>=6.0"]
+
+[project.scripts]
+memfas = "agent_memfas.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/wangtianthu/agent-memfas"
+Repository = "https://github.com/wangtianthu/agent-memfas"
+
+[tool.setuptools.packages.find]
+where = ["src"]
