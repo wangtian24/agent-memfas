@@ -24,18 +24,30 @@ Agent: "I apologize, but I don't have context about what project..."
 
 ## ✨ Features at a Glance
 
-- **[v0.1]** Type 1 (Fast) — O(1) keyword triggers for instant recall
-- **[v0.1]** Type 2 (Slow) — FTS5 full-text search with BM25 ranking
-- **[v0.2]** Pluggable search backends — FTS5 or embeddings
-- **[v0.2]** Semantic search — FastEmbed or Ollama embeddings
-- **[v0.2]** Auto-suggest triggers from indexed content
-- **[v0.3]** Dynamic context curation — proactive memory selection each turn
-- **[v0.3]** Topic detection — tracks conversation topic and shifts
-- **[v0.3]** Multi-factor relevance scoring — semantic + recency + access patterns
-- **[v0.3]** Token budget management — fills budget with highest-value memories
-- **[v0.3]** 84% token reduction — 50K baseline → 7.8K curated
-- **[v0.3]** Telemetry — JSONL logging, compression stats, latency tracking
-- **[v0.3.1]** Curation levels 1-5 — slider from minimal to full context
+- **[v0.1] Core Memory**
+  - Type 1 (Fast) — O(1) keyword triggers for instant recall
+  - Type 2 (Slow) — FTS5 full-text search with BM25 ranking
+  - Zero dependencies — works with SQLite built-in
+
+- **[v0.2] Pluggable Backends**
+  - Swappable search backends — FTS5 or embeddings
+  - Semantic search — FastEmbed or Ollama embeddings
+  - Auto-suggest triggers from indexed content
+  - `memfas reindex` — migrate between backends
+
+- **[v0.3] Dynamic Context Curation**
+  - Proactive memory selection each turn
+  - Topic detection — tracks conversation topic and shifts
+  - Multi-factor relevance scoring — semantic + recency + access patterns
+  - Token budget management — fills budget with highest-value memories
+  - 84% token reduction — 50K baseline → 7.8K curated
+  - Telemetry — JSONL logging, compression stats, latency tracking
+
+- **[v0.3.1] Curation Levels**
+  - 5-level slider from minimal to full context
+  - Level names: minimal / lean / balanced / rich / full
+  - Per-query level override
+  - `auto` level ready for smart selection
 
 ---
 
