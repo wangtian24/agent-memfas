@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-memfas"
 version = "0.3.1"
-description = "Memory Fast and Slow for AI Agents - dual-store memory with keyword triggers and pluggable search"
+description = "Memory Fast and Slow for AI Agents"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -57,8 +57,8 @@ dev = [
 memfas = "agent_memfas.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/wangtianthu/agent-memfas"
-Repository = "https://github.com/wangtianthu/agent-memfas"
+Homepage = "https://github.com/wangtian24/agent-memfas"
+Repository = "https://github.com/wangtian24/agent-memfas"
 
 [tool.setuptools.packages.find]
 where = ["src"]
