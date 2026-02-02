@@ -1,6 +1,6 @@
 # agent-memfas Roadmap
 
-## v0.1.0 (Current) ✅
+## v0.1.0 ✅
 - Type 1: Keyword triggers
 - Type 2: FTS5 + BM25
 - Zero dependencies
@@ -9,163 +9,146 @@
 
 ---
 
-## v0.2.0 — Embedding Support (RAG)
+## v0.2.0 ✅ (Current)
 
-### The Case for Embeddings
+### Pluggable Search Backends
 
-Current FTS5 limitations:
-- **Lexical only** — "running" won't match "jogging" or "marathon training"
-- **No semantic similarity** — can't find conceptually related memories
-- **Keyword-dependent** — user must guess the right words
-
-Embeddings solve this:
-- **Semantic search** — meaning-based, not word-based
-- **Better recall** — finds related content even with different vocabulary
-- **Standard RAG pattern** — familiar to most developers
-
-### Design Decisions
-
-#### 1. Embedding Provider Options
-
-| Option | Pros | Cons |
-|--------|------|------|
-| **OpenAI** | Best quality, easy API | Requires API key, costs $, network dependency |
-| **Local (sentence-transformers)** | Free, offline, private | Adds ~500MB dependency, slower first load |
-| **Ollama** | Local, good quality | Requires Ollama running |
-| **Pluggable** | User choice | More complex API |
-
-**Recommendation**: Pluggable with sensible defaults
-```python
-# Default: FTS5 (no deps)
-mem = Memory(config)
-
-# Opt-in: OpenAI embeddings
-mem = Memory(config, embedder="openai")
-
-# Opt-in: Local embeddings
-mem = Memory(config, embedder="local")  # uses sentence-transformers
-```
-
-#### 2. Vector Storage Options
-
-| Option | Pros | Cons |
-|--------|------|------|
-| **SQLite + numpy** | Zero new deps, simple | Slower for large datasets |
-| **sqlite-vec** | Fast, SQLite native | Requires extension install |
-| **Chroma** | Full-featured, popular | Heavy dependency |
-| **FAISS** | Very fast | Complex, C++ dependency |
-
-**Recommendation**: SQLite + numpy for v0.2, optional sqlite-vec for v0.3
-```sql
-CREATE TABLE embeddings (
-    memory_id INTEGER PRIMARY KEY,
-    vector BLOB  -- numpy array serialized
-);
-```
-
-#### 3. Hybrid Search
-
-Best of both worlds — combine FTS5 + embeddings:
-
-```
-Query: "How's marathon training going?"
-         │
-         ├─→ FTS5: "marathon" "training" → BM25 scores
-         │
-         └─→ Embeddings: semantic similarity → cosine scores
-         
-         Combined: α * BM25 + (1-α) * cosine
-         (α configurable, default 0.5)
-```
-
-### API Changes
+Implemented a clean abstraction for search backends:
 
 ```python
-# Config additions
-{
-  "search": {
-    "mode": "hybrid",  # "fts5" | "embedding" | "hybrid"
-    "embedding": {
-      "provider": "openai",  # "openai" | "local" | "ollama"
-      "model": "text-embedding-3-small",
-      "dimensions": 1536
-    },
-    "hybrid_alpha": 0.5  # Weight for FTS5 vs embedding
-  }
-}
+# Default: FTS5 (zero deps)
+mem = Memory("./memfas.yaml")
 
-# Memory API
-mem.search("marathon training", mode="hybrid")  # Uses config default
-mem.search("marathon training", mode="embedding")  # Force embedding only
+# Opt-in: Local embeddings via FastEmbed
+from agent_memfas.embedders.fastembed import FastEmbedEmbedder
+mem = Memory(config, search_backend="embedding", embedder=FastEmbedEmbedder())
+
+# Opt-in: Local embeddings via Ollama
+from agent_memfas.embedders.ollama import OllamaEmbedder
+mem = Memory(config, search_backend="embedding", embedder=OllamaEmbedder())
 ```
 
-### CLI Changes
+### New Components
+
+- `agent_memfas.search.base` — `SearchBackend` ABC, `SearchResult` dataclass
+- `agent_memfas.search.fts5` — `FTS5Backend` (default, zero deps)
+- `agent_memfas.search.embedding` — `EmbeddingBackend` (sqlite-vec)
+- `agent_memfas.embedders.base` — `Embedder` ABC
+- `agent_memfas.embedders.fastembed` — `FastEmbedEmbedder` (BAAI/bge-small)
+- `agent_memfas.embedders.ollama` — `OllamaEmbedder` (nomic-embed-text)
+
+### Optional Dependencies
 
 ```bash
-# Index with embeddings
-memfas index ./memory/ --embed
-
-# Search modes
-memfas search "marathon training"           # Uses config default
-memfas search "marathon training" --semantic  # Force embedding search
-
-# Re-embed existing content
-memfas reindex --embed
+pip install agent-memfas                 # FTS5 only
+pip install agent-memfas[embeddings]     # + FastEmbed + sqlite-vec
+pip install agent-memfas[ollama]         # + Ollama support
+pip install agent-memfas[all]            # Everything
 ```
 
-### Migration Path
+### CLI Reindex
 
-1. Existing users: No changes needed, FTS5 remains default
-2. Opt-in: Set `search.mode: "hybrid"` and configure embedding provider
-3. Gradual: Can embed incrementally, hybrid search works with partial embeddings
+```bash
+# Re-index with embedding backend
+memfas reindex -b embedding -e fastembed -y --save-config
+```
+
+### Config-based Backend
+
+```yaml
+search:
+  backend: embedding
+  embedder_type: fastembed
+  embedder_model: BAAI/bge-small-en-v1.5
+```
+
+### Migration
+
+- v0.1 → v0.2: No changes needed, FTS5 remains default
+- To upgrade to embeddings: `memfas reindex -b embedding -e fastembed`
 
 ---
 
-## v0.3.0 — Advanced Features
+## v0.3.0 — Hybrid Search + Polish
 
-### 1. Trigger Learning
-Auto-promote frequent Type 2 queries to Type 1 triggers:
-```python
-# Track query patterns
-mem.recall("family")  # Type 1 hit
-mem.recall("preference learning")  # Type 2 search, 5th time this week
+### 1. Hybrid Search (FTS5 + Embeddings)
 
-# Suggest promotion
-mem.suggest_promotions()
-# → "preference learning" searched 5x, consider: 
-#   memfas remember "preference learning" --hint "..."
-```
+Combine keyword and semantic for best results:
 
-### 2. Memory Decay
-Configurable forgetting — old, unaccessed memories fade:
 ```python
 {
-  "decay": {
-    "enabled": true,
-    "half_life_days": 90,  # Memories lose 50% relevance after 90 days
-    "access_refresh": true  # Accessing resets decay
+  "search": {
+    "mode": "hybrid",
+    "hybrid_alpha": 0.5  # Balance FTS5 vs embedding
   }
 }
 ```
 
-### 3. Memory Graphs
-Link related memories:
+### 2. Memory IDs for Triggers
+
+Currently broken in v0.2 due to schema change. Fix with doc_id based linking:
+
 ```python
-mem.link(memory_id_1, memory_id_2, relation="related_to")
-mem.get_related(memory_id)  # Graph traversal
+mem.add_trigger("project", "Current project", doc_ids=["abc123", "def456"])
 ```
 
-### 4. Source Watching
-Auto-reindex when files change:
+### 3. CLI Embedding Support ✅ (Partial)
+
 ```bash
-memfas watch ./memory/  # Watches for changes, auto-reindexes
+# Implemented in v0.2:
+memfas reindex -b embedding -e fastembed --save-config
+
+# TODO for v0.3:
+memfas index ./memory/ --backend embedding
+memfas search "concepts" --semantic
 ```
 
-### 5. Context Window Estimation
+### 4. Better Chunking
+
+Configurable chunk size for embeddings (current 100-char min is too small):
+
+```python
+{
+  "indexing": {
+    "chunk_size": 500,
+    "chunk_overlap": 50
+  }
+}
+```
+
+---
+
+## v0.4.0 — Advanced Features
+
+### 1. Trigger Learning
+Auto-suggest promotions from frequent Type 2 queries:
+```python
+mem.suggest_promotions()
+# → "preference learning" searched 5x this week
+```
+
+### 2. Memory Decay
+Configurable forgetting:
+```python
+{
+  "decay": {
+    "half_life_days": 90,
+    "access_refresh": true
+  }
+}
+```
+
+### 3. Source Watching
+Auto-reindex on file changes:
+```bash
+memfas watch ./memory/
+```
+
+### 4. Context Budget
 Help agents budget context:
 ```python
 result = mem.recall("family", max_tokens=500)
-print(result.token_estimate)  # ~340 tokens
+print(result.token_estimate)
 ```
 
 ---
@@ -184,32 +167,17 @@ print(result.token_estimate)  # ~340 tokens
 
 ## Non-Goals (for now)
 
-- **Multi-user auth** — This is agent-local memory, not a service
-- **Real-time sync** — Files are the source of truth
-- **Complex ontologies** — Keep it simple, keyword + search
-
----
-
-## Open Questions
-
-1. **Embedding cost**: Should we cache embeddings aggressively? Re-embed on content change only?
-
-2. **Chunk size**: Current 100-char minimum is arbitrary. Optimal chunk size for embeddings is typically 200-500 tokens. Make configurable?
-
-3. **Hybrid ranking**: How to normalize BM25 (unbounded) with cosine similarity (0-1)? Research needed.
-
-4. **Ollama integration**: Auto-detect if Ollama is running? Fallback to FTS5?
-
-5. **Privacy**: Local-only embedding option is critical for sensitive memories. Make this the default?
+- **Multi-user auth** — Agent-local memory, not a service
+- **Real-time sync** — Files are source of truth
+- **Complex ontologies** — Keep it simple
 
 ---
 
 ## Contributing
 
-Ideas? Open an issue: https://github.com/wangtian24/agent-memfas/issues
+Ideas? Open an issue: https://github.com/wangtianthu/agent-memfas/issues
 
-Priority for v0.2:
-1. Pluggable embedding interface
-2. OpenAI provider (most common)
-3. Local provider (sentence-transformers)
-4. Hybrid search
+Community embedders welcome in `contrib/embedders/`:
+- OpenAI
+- Cohere
+- Voyager

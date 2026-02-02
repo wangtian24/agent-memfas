@@ -108,7 +108,7 @@ class TestMemory:
         stats = mem.stats()
         assert "memories" in stats
         assert "triggers" in stats
-        assert "total_chars" in stats
+        assert "backend" in stats
     
     def test_clear(self, mem):
         mem.add_trigger("test", "Test")

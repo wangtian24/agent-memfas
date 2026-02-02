@@ -3,18 +3,24 @@ Core Memory class for agent-memfas.
 
 Implements dual-store memory:
 - Type 1 (Fast): Keyword triggers for instant recall
-- Type 2 (Slow): FTS5 search for deliberate lookup
+- Type 2 (Slow): Pluggable search backend (FTS5 default, embeddings optional)
 """
 
 import sqlite3
 import re
+import hashlib
 from pathlib import Path
 from glob import glob
 from datetime import datetime
-from typing import Optional, Union
+from typing import Optional, Union, List, TYPE_CHECKING
 from dataclasses import dataclass
 
 from .config import Config, TriggerConfig
+from .search.base import SearchBackend, SearchResult
+from .search.fts5 import FTS5Backend
+
+if TYPE_CHECKING:
+    from .embedders.base import Embedder
 
 
 @dataclass
@@ -33,25 +39,95 @@ class MemoryResult:
         return f"{prefix}\n  > {snippet}"
 
 
+def _create_embedder_from_config(config: Config) -> Optional["Embedder"]:
+    """Create an embedder from config settings."""
+    embedder_type = config.search.embedder_type
+    embedder_model = config.search.embedder_model
+    
+    if not embedder_type:
+        return None
+    
+    if embedder_type == "fastembed":
+        from .embedders.fastembed import FastEmbedEmbedder
+        if embedder_model:
+            return FastEmbedEmbedder(model=embedder_model)
+        return FastEmbedEmbedder()
+    elif embedder_type == "ollama":
+        from .embedders.ollama import OllamaEmbedder
+        if embedder_model:
+            return OllamaEmbedder(model=embedder_model)
+        return OllamaEmbedder()
+    else:
+        raise ValueError(f"Unknown embedder type: {embedder_type}")
+
+
+def _create_backend(
+    config: Config,
+    backend_type: Optional[str] = None,
+    embedder: Optional["Embedder"] = None
+) -> SearchBackend:
+    """
+    Create a search backend based on config.
+    
+    Args:
+        config: Config object
+        backend_type: Override backend type ("fts5" or "embedding")
+        embedder: Embedder instance (auto-created from config if not provided)
+    
+    Returns:
+        SearchBackend instance
+    """
+    backend_type = backend_type or config.search.backend
+    
+    if backend_type == "embedding":
+        # Try to create embedder from config if not provided
+        if embedder is None:
+            embedder = _create_embedder_from_config(config)
+        if embedder is None:
+            raise ValueError(
+                "Embedder required for embedding backend. Either pass embedder= "
+                "or set search.embedder_type in config."
+            )
+        from .search.embedding import EmbeddingBackend
+        return EmbeddingBackend(config.db_path, embedder)
+    else:
+        return FTS5Backend(
+            config.db_path,
+            recency_weight=config.search.recency_weight,
+            min_score=config.search.min_score
+        )
+
+
 class Memory:
     """
     Dual-store memory system for AI agents.
     
     Type 1 (Fast): Keyword triggers - instant pattern matching
-    Type 2 (Slow): FTS5 search - deliberate semantic lookup
+    Type 2 (Slow): Pluggable search backend (FTS5 or embeddings)
     
     Usage:
+        # Default (FTS5, zero deps)
         mem = Memory("./memfas.yaml")
         context = mem.recall("How's the family?")
-        mem.add_trigger("tahoe", "Family ski trips")
+        
+        # With embeddings (optional deps)
+        from agent_memfas.embedders.fastembed import FastEmbedEmbedder
+        mem = Memory("./memfas.yaml", embedder=FastEmbedEmbedder())
     """
     
-    def __init__(self, config: Union[str, Config, None] = None):
+    def __init__(
+        self,
+        config: Union[str, Config, None] = None,
+        search_backend: Optional[str] = None,
+        embedder: Optional["Embedder"] = None
+    ):
         """
         Initialize memory system.
         
         Args:
             config: Path to config file, Config object, or None for auto-detect
+            search_backend: Override search backend type ("fts5" or "embedding")
+            embedder: Embedder for embedding backend (optional)
         """
         if config is None:
             self.config = Config.default(".")
@@ -59,60 +135,25 @@ class Memory:
             if Path(config).exists():
                 self.config = Config.load(config)
             else:
-                # Treat as directory path
                 self.config = Config.default(config)
         else:
             self.config = config
         
+        # Initialize search backend
+        self._backend = _create_backend(self.config, search_backend, embedder)
+        self._embedder = embedder
+        
+        # Triggers DB (separate from search backend)
         self._conn: Optional[sqlite3.Connection] = None
-        self._ensure_db()
+        self._ensure_triggers_db()
     
-    def _ensure_db(self):
-        """Ensure database exists with correct schema."""
+    def _ensure_triggers_db(self):
+        """Ensure triggers table exists."""
         db_path = Path(self.config.db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         
         conn = sqlite3.connect(str(db_path))
         cur = conn.cursor()
-        
-        # Main memories table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS memories (
-                id INTEGER PRIMARY KEY,
-                source TEXT,
-                section TEXT,
-                text TEXT,
-                date TEXT,
-                type TEXT DEFAULT 'markdown',
-                indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # FTS5 virtual table for full-text search
-        cur.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-                source,
-                section,
-                text,
-                content='memories',
-                content_rowid='id'
-            )
-        """)
-        
-        # Triggers for keeping FTS in sync
-        cur.execute("""
-            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-                INSERT INTO memories_fts(rowid, source, section, text)
-                VALUES (new.id, new.source, new.section, new.text);
-            END
-        """)
-        
-        cur.execute("""
-            CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-                INSERT INTO memories_fts(memories_fts, rowid, source, section, text)
-                VALUES ('delete', old.id, old.source, old.section, old.text);
-            END
-        """)
         
         # Keyword triggers table
         cur.execute("""
@@ -154,10 +195,11 @@ class Memory:
         return self._conn
     
     def close(self):
-        """Close database connection."""
+        """Close database connections."""
         if self._conn:
             self._conn.close()
             self._conn = None
+        self._backend.close()
     
     # ============ Type 1: Fast (Keyword Triggers) ============
     
@@ -215,24 +257,22 @@ class Memory:
         
         for keyword, hint, memory_ids in triggers:
             if keyword in text_lower:
-                # Get associated memories if specified
                 if memory_ids:
+                    # Search for associated memories by ID
                     ids = [int(x) for x in memory_ids.split(",") if x]
-                    cur.execute(f"""
-                        SELECT source, text, date FROM memories
-                        WHERE id IN ({','.join('?' * len(ids))})
-                    """, ids)
-                    for row in cur.fetchall():
-                        results.append(MemoryResult(
-                            source=row[0],
-                            text=row[1],
-                            score=1.0,
-                            trigger=keyword,
-                            hint=hint,
-                            date=row[2]
-                        ))
+                    for doc_id in ids:
+                        search_results = self._backend.search(str(doc_id), limit=1)
+                        if search_results:
+                            r = search_results[0]
+                            results.append(MemoryResult(
+                                source=r.source,
+                                text=r.text,
+                                score=1.0,
+                                trigger=keyword,
+                                hint=hint,
+                                date=r.date
+                            ))
                 else:
-                    # Return hint as placeholder
                     results.append(MemoryResult(
                         source="trigger",
                         text=hint,
@@ -243,11 +283,11 @@ class Memory:
         
         return results
     
-    # ============ Type 2: Slow (FTS5 Search) ============
+    # ============ Type 2: Slow (Search Backend) ============
     
     def search(self, query: str, limit: int = None) -> list[MemoryResult]:
         """
-        Search memories using FTS5 (Type 2 - slow path).
+        Search memories using the configured backend.
         
         Args:
             query: Search query
@@ -259,59 +299,17 @@ class Memory:
         if limit is None:
             limit = self.config.search.max_results
         
-        conn = self._get_conn()
-        cur = conn.cursor()
+        search_results = self._backend.search(query, limit)
         
-        # Sanitize query for FTS5
-        safe_query = re.sub(r'["\'\(\)\*\:\^\?\+\-\~\{\}\[\]\|\\\/]', ' ', query)
-        safe_query = ' '.join(safe_query.split())  # Normalize whitespace
-        
-        if not safe_query.strip():
-            return []
-        
-        try:
-            cur.execute("""
-                SELECT m.source, m.text, m.date, bm25(memories_fts) as score
-                FROM memories m
-                JOIN memories_fts fts ON m.id = fts.rowid
-                WHERE memories_fts MATCH ?
-                ORDER BY score
-                LIMIT ?
-            """, (safe_query, limit * 2))  # Get extra for recency re-ranking
-            
-            results = []
-            now = datetime.now()
-            
-            for row in cur.fetchall():
-                source, text, date, bm25_score = row
-                
-                # Apply recency weighting
-                recency_score = 1.0
-                if date and self.config.search.recency_weight > 0:
-                    try:
-                        mem_date = datetime.fromisoformat(date)
-                        days_old = (now - mem_date).days
-                        recency_score = 1.0 / (1.0 + days_old * self.config.search.recency_weight * 0.01)
-                    except:
-                        pass
-                
-                final_score = abs(bm25_score) * recency_score
-                
-                if final_score >= self.config.search.min_score:
-                    results.append(MemoryResult(
-                        source=source,
-                        text=text,
-                        score=final_score,
-                        date=date
-                    ))
-            
-            # Sort by final score and limit
-            results.sort(key=lambda x: x.score, reverse=True)
-            return results[:limit]
-            
-        except sqlite3.OperationalError:
-            # FTS query failed, return empty
-            return []
+        return [
+            MemoryResult(
+                source=r.source,
+                text=r.text,
+                score=r.score,
+                date=r.date
+            )
+            for r in search_results
+        ]
     
     # ============ Combined Recall ============
     
@@ -322,8 +320,7 @@ class Memory:
         This is the main entry point. It:
         1. Checks Type 1 triggers first (fast)
         2. Falls back to Type 2 search if needed (slow)
-        3. Optionally includes always-load memories
-        4. Formats results for LLM context injection
+        3. Formats results for LLM context injection
         
         Args:
             context: Natural language context/query
@@ -371,6 +368,11 @@ class Memory:
     
     # ============ Indexing ============
     
+    def _doc_id(self, source: str, section: str, text: str) -> str:
+        """Generate stable document ID."""
+        content = f"{source}:{section}:{text[:100]}"
+        return hashlib.sha256(content.encode()).hexdigest()[:16]
+    
     def index_file(self, path: str, file_type: str = "markdown"):
         """
         Index a single file into memory.
@@ -394,10 +396,6 @@ class Memory:
     
     def _index_markdown(self, source: str, content: str):
         """Index markdown content, splitting by headers."""
-        conn = self._get_conn()
-        cur = conn.cursor()
-        
-        # Split by headers
         sections = re.split(r'^(#{1,6}\s+.+)$', content, flags=re.MULTILINE)
         
         current_section = "intro"
@@ -409,53 +407,47 @@ class Memory:
             elif part.strip():
                 chunks.append((current_section, part.strip()))
         
-        # If no headers found, index as single chunk
         if not chunks:
             chunks = [("content", content)]
         
-        # Insert chunks
         for section, text in chunks:
-            if len(text) > 100:  # Skip tiny chunks
-                cur.execute("""
-                    INSERT INTO memories (source, section, text, date, type)
-                    VALUES (?, ?, ?, ?, 'markdown')
-                """, (source, section, text[:10000], datetime.now().isoformat()))
-        
-        conn.commit()
+            if len(text) > 100:
+                doc_id = self._doc_id(source, section, text)
+                self._backend.index(doc_id, text[:10000], {
+                    "source": source,
+                    "section": section,
+                    "date": datetime.now().isoformat()
+                })
     
     def _index_json(self, source: str, content: str):
         """Index JSON content."""
-        import json
-        conn = self._get_conn()
-        cur = conn.cursor()
+        import json as json_lib
         
         try:
-            data = json.loads(content)
-            text = json.dumps(data, indent=2)[:10000]
-            cur.execute("""
-                INSERT INTO memories (source, section, text, date, type)
-                VALUES (?, ?, ?, ?, 'json')
-            """, (source, "root", text, datetime.now().isoformat()))
-            conn.commit()
-        except json.JSONDecodeError:
+            data = json_lib.loads(content)
+            text = json_lib.dumps(data, indent=2)[:10000]
+            doc_id = self._doc_id(source, "root", text)
+            self._backend.index(doc_id, text, {
+                "source": source,
+                "section": "root",
+                "date": datetime.now().isoformat()
+            })
+        except json_lib.JSONDecodeError:
             pass
     
     def _index_text(self, source: str, content: str):
         """Index plain text content."""
-        conn = self._get_conn()
-        cur = conn.cursor()
-        
-        # Split into ~1000 char chunks
         chunk_size = 1000
         for i in range(0, len(content), chunk_size):
             chunk = content[i:i + chunk_size]
             if chunk.strip():
-                cur.execute("""
-                    INSERT INTO memories (source, section, text, date, type)
-                    VALUES (?, ?, ?, ?, 'text')
-                """, (source, f"chunk_{i // chunk_size}", chunk, datetime.now().isoformat()))
-        
-        conn.commit()
+                section = f"chunk_{i // chunk_size}"
+                doc_id = self._doc_id(source, section, chunk)
+                self._backend.index(doc_id, chunk, {
+                    "source": source,
+                    "section": section,
+                    "date": datetime.now().isoformat()
+                })
     
     def index_sources(self):
         """Index all sources from config."""
@@ -469,40 +461,26 @@ class Memory:
     
     def clear(self):
         """Clear all indexed memories (keeps triggers)."""
-        conn = self._get_conn()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM memories")
-        cur.execute("DELETE FROM memories_fts")
-        conn.commit()
+        self._backend.clear()
     
     def stats(self) -> dict:
         """Get memory system statistics."""
         conn = self._get_conn()
         cur = conn.cursor()
         
-        cur.execute("SELECT COUNT(*) FROM memories")
-        memory_count = cur.fetchone()[0]
-        
         cur.execute("SELECT COUNT(*) FROM keyword_triggers")
         trigger_count = cur.fetchone()[0]
         
-        cur.execute("SELECT SUM(LENGTH(text)) FROM memories")
-        total_chars = cur.fetchone()[0] or 0
-        
         return {
-            "memories": memory_count,
+            "memories": self._backend.count(),
             "triggers": trigger_count,
-            "total_chars": total_chars,
+            "backend": type(self._backend).__name__,
             "db_path": self.config.db_path
         }
     
     def suggest_triggers(self, min_occurrences: int = 3, limit: int = 20) -> list[dict]:
         """
         Suggest potential triggers based on frequently occurring terms.
-        
-        Analyzes indexed content to find:
-        1. Capitalized words (likely proper nouns/entities)
-        2. Frequently occurring terms
         
         Args:
             min_occurrences: Minimum times a term must appear
@@ -513,66 +491,50 @@ class Memory:
         """
         from collections import Counter
         
+        # Get all text directly from the backend's underlying storage
+        # This is backend-specific, but both FTS5 and Embedding use similar schemas
         conn = self._get_conn()
         cur = conn.cursor()
         
-        # Get all indexed text
-        cur.execute("SELECT text FROM memories")
-        all_text = " ".join(row[0] for row in cur.fetchall())
+        # Try the FTS5 backend table first
+        try:
+            cur.execute("SELECT text FROM search_docs")
+            rows = cur.fetchall()
+        except:
+            # Fallback: try vec_docs for embedding backend
+            try:
+                cur.execute("SELECT text FROM vec_docs")
+                rows = cur.fetchall()
+            except:
+                rows = []
+        
+        all_text = " ".join(row[0] for row in rows if row[0])
         
         if not all_text:
             return []
         
-        # Get existing triggers to exclude
         existing = {t["keyword"].lower() for t in self.list_triggers()}
-        
         suggestions = []
         
-        # Method 1: Capitalized words (proper nouns, entities)
+        # Capitalized words (entities)
         capitalized = re.findall(r'\b[A-Z][a-z]{2,}\b', all_text)
         cap_counts = Counter(w.lower() for w in capitalized)
         
         for term, count in cap_counts.most_common(limit * 2):
             if count >= min_occurrences and term not in existing:
-                suggestions.append({
-                    "term": term,
-                    "count": count,
-                    "type": "entity"
-                })
+                suggestions.append({"term": term, "count": count, "type": "entity"})
         
-        # Method 2: Frequent multi-word phrases (bigrams)
-        words = re.findall(r'\b[a-z]{3,}\b', all_text.lower())
-        bigrams = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1)]
-        bigram_counts = Counter(bigrams)
-        
-        for phrase, count in bigram_counts.most_common(limit):
-            if count >= min_occurrences and phrase not in existing:
-                # Skip common phrases
-                if phrase not in ("the the", "of the", "in the", "to the", "and the"):
-                    suggestions.append({
-                        "term": phrase,
-                        "count": count,
-                        "type": "phrase"
-                    })
-        
-        # Method 3: Standalone frequent terms (4+ chars to avoid noise)
+        # Frequent terms
+        words = re.findall(r'\b[a-z]{4,}\b', all_text.lower())
         word_counts = Counter(words)
         stopwords = {"this", "that", "with", "from", "have", "been", "were", "they", 
                      "their", "would", "could", "should", "about", "into", "more",
                      "some", "than", "then", "when", "what", "which", "there"}
         
         for term, count in word_counts.most_common(limit * 3):
-            if (count >= min_occurrences and 
-                term not in existing and 
-                term not in stopwords and
-                len(term) >= 4):
-                suggestions.append({
-                    "term": term,
-                    "count": count,
-                    "type": "term"
-                })
+            if count >= min_occurrences and term not in existing and term not in stopwords:
+                suggestions.append({"term": term, "count": count, "type": "term"})
         
-        # Deduplicate and sort by count
         seen = set()
         unique = []
         for s in sorted(suggestions, key=lambda x: x["count"], reverse=True):
@@ -581,3 +543,58 @@ class Memory:
                 unique.append(s)
         
         return unique[:limit]
+    
+    # ============ Backend Access ============
+    
+    @property
+    def backend(self) -> SearchBackend:
+        """Access the underlying search backend."""
+        return self._backend
+    
+    def reindex(self, new_backend: Optional[str] = None, embedder: Optional["Embedder"] = None):
+        """
+        Re-index all documents with a new backend.
+        
+        Args:
+            new_backend: New backend type ("fts5" or "embedding")
+            embedder: New embedder (required for embedding backend)
+        """
+        # Get all current documents directly from the database
+        conn = self._get_conn()
+        cur = conn.cursor()
+        
+        documents = []
+        
+        # Try FTS5 backend table
+        try:
+            cur.execute("SELECT doc_id, text, source, section, date FROM search_docs")
+            documents = cur.fetchall()
+        except:
+            pass
+        
+        # If empty, try embedding backend table
+        if not documents:
+            try:
+                cur.execute("SELECT doc_id, text, source, section, date FROM vec_docs")
+                documents = cur.fetchall()
+            except:
+                pass
+        
+        if not documents:
+            return
+        
+        # Create new backend
+        new = _create_backend(self.config, new_backend, embedder)
+        
+        # Re-index each document
+        for doc_id, text, source, section, date in documents:
+            new.index(doc_id, text, {
+                "source": source or "",
+                "section": section or "",
+                "date": date or ""
+            })
+        
+        # Swap backends
+        self._backend.close()
+        self._backend = new
+        self._embedder = embedder

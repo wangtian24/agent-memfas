@@ -26,9 +26,14 @@ class SourceConfig:
 @dataclass 
 class SearchConfig:
     """Configuration for search behavior."""
+    backend: str = "fts5"  # "fts5" or "embedding"
     max_results: int = 5
     recency_weight: float = 0.3
     min_score: float = 0.0  # BM25 scores are tiny, don't filter by default
+    
+    # Embedder config (for embedding backend)
+    embedder_type: Optional[str] = None  # "fastembed" or "ollama"
+    embedder_model: Optional[str] = None  # e.g. "BAAI/bge-small-en-v1.5"
 
 
 @dataclass
@@ -130,9 +135,12 @@ class Config:
             ],
             "triggers_file": self.triggers_file,
             "search": {
+                "backend": self.search.backend,
                 "max_results": self.search.max_results,
                 "recency_weight": self.search.recency_weight,
                 "min_score": self.search.min_score,
+                "embedder_type": self.search.embedder_type,
+                "embedder_model": self.search.embedder_model,
             }
         }
     

@@ -108,9 +108,9 @@ def cmd_stats(args):
     mem = Memory(args.config)
     stats = mem.stats()
     print(f"Database: {stats['db_path']}")
+    print(f"Backend: {stats['backend']}")
     print(f"Memories: {stats['memories']}")
     print(f"Triggers: {stats['triggers']}")
-    print(f"Total chars: {stats['total_chars']:,}")
     mem.close()
 
 
@@ -185,6 +185,90 @@ def cmd_clear(args):
     mem.close()
 
 
+def cmd_reindex(args):
+    """Re-index all memories with a different backend."""
+    from .config import Config
+    
+    # Load config
+    if Path(args.config).exists():
+        config = Config.load(args.config)
+    else:
+        config = Config.default(".")
+    
+    # Determine target backend
+    target_backend = args.backend or config.search.backend
+    
+    # Create embedder if needed
+    embedder = None
+    if target_backend == "embedding":
+        embedder_type = args.embedder or config.search.embedder_type
+        embedder_model = args.model or config.search.embedder_model
+        
+        if not embedder_type:
+            print("Embedding backend requires --embedder (fastembed or ollama)")
+            sys.exit(1)
+        
+        if embedder_type == "fastembed":
+            try:
+                from .embedders.fastembed import FastEmbedEmbedder
+                print(f"Loading FastEmbed embedder...")
+                embedder = FastEmbedEmbedder(model=embedder_model) if embedder_model else FastEmbedEmbedder()
+                print(f"✓ Loaded: {embedder.model_name} ({embedder.dimensions} dims)")
+            except ImportError:
+                print("FastEmbed not installed. Run: pip install fastembed")
+                sys.exit(1)
+        elif embedder_type == "ollama":
+            try:
+                from .embedders.ollama import OllamaEmbedder
+                embedder = OllamaEmbedder(model=embedder_model) if embedder_model else OllamaEmbedder()
+                print(f"✓ Using Ollama: {embedder.model} ({embedder.dimensions} dims)")
+            except ImportError:
+                print("requests not installed. Run: pip install requests")
+                sys.exit(1)
+        else:
+            print(f"Unknown embedder type: {embedder_type}")
+            sys.exit(1)
+    
+    # Open memory with current backend
+    mem = Memory(config)
+    current_backend = type(mem.backend).__name__
+    current_count = mem.stats()["memories"]
+    
+    print(f"Current: {current_backend} with {current_count} memories")
+    print(f"Target: {target_backend}")
+    
+    if current_count == 0:
+        print("No memories to reindex.")
+        mem.close()
+        return
+    
+    if not args.yes:
+        confirm = input(f"Re-index {current_count} memories to {target_backend}? [y/N] ")
+        if confirm.lower() != 'y':
+            print("Aborted.")
+            mem.close()
+            return
+    
+    print("Re-indexing...")
+    mem.reindex(new_backend=target_backend, embedder=embedder)
+    
+    new_count = mem.stats()["memories"]
+    new_backend = type(mem.backend).__name__
+    print(f"✓ Migrated to {new_backend}: {new_count} memories")
+    
+    # Optionally update config
+    if args.save_config and Path(args.config).exists():
+        config.search.backend = target_backend
+        if embedder_type:
+            config.search.embedder_type = embedder_type
+        if embedder_model:
+            config.search.embedder_model = embedder_model
+        config.save(args.config)
+        print(f"✓ Updated config: {args.config}")
+    
+    mem.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Memory Fast and Slow for AI Agents",
@@ -249,6 +333,15 @@ def main():
     p_suggest.add_argument("-n", "--limit", type=int, default=15, help="Max suggestions")
     p_suggest.add_argument("-m", "--min", type=int, default=3, help="Min occurrences")
     p_suggest.set_defaults(func=cmd_suggest)
+    
+    # reindex
+    p_reindex = subparsers.add_parser("reindex", help="Re-index memories with different backend")
+    p_reindex.add_argument("-b", "--backend", choices=["fts5", "embedding"], help="Target backend")
+    p_reindex.add_argument("-e", "--embedder", choices=["fastembed", "ollama"], help="Embedder type")
+    p_reindex.add_argument("-m", "--model", help="Embedder model name")
+    p_reindex.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    p_reindex.add_argument("--save-config", action="store_true", help="Update config file")
+    p_reindex.set_defaults(func=cmd_reindex)
     
     args = parser.parse_args()
     
