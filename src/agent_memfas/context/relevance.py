@@ -2,7 +2,7 @@
 Relevance scoring for context chunks.
 """
 
-from typing import Optional
+from typing import Optional, List
 import re
 
 
@@ -12,21 +12,24 @@ class RelevanceScorer:
     
     Formula:
         relevance_score = (memfas_similarity × memfas_weight) +
-                         (recency_hours × recency_bonus) +
-                         (importance_flag × importance_bonus)
+                         (recency_hours × RECENCY_BONUS) +
+                         (importance_flag × IMPORTANCE_BONUS)
+    
+    Uses memfas Type 2 search for similarity when available,
+    falls back to keyword overlap.
     """
     
     def __init__(
         self,
         config,
-        memfas_client: Optional[object] = None,
+        memfas_client: Optional["MemfasIntegration"] = None,
     ):
         """
         Initialize scorer.
         
         Args:
             config: ContextConfig instance
-            memfas_client: Optional memfas client for similarity scoring
+            memfas_client: Optional MemfasIntegration for similarity scoring
         """
         self.config = config
         self.memfas_client = memfas_client
@@ -54,9 +57,13 @@ class RelevanceScorer:
         memfas_score = 0.0
         if self.memfas_client:
             try:
-                results = self.memfas_client.search(prompt, limit=1)
-                if results:
-                    memfas_score = results[0].score if hasattr(results[0], 'score') else 0.5
+                scores = self.memfas_client.score_chunks(
+                    chunks=[chunk],
+                    prompt=prompt,
+                    limit=1
+                )
+                if scores:
+                    memfas_score = scores[0]
             except Exception:
                 pass
         else:
@@ -140,13 +147,13 @@ class RelevanceScorer:
     
     def score_batch(
         self,
-        chunks: list[str],
+        chunks: List[str],
         prompt: str,
-        recency_hours: list[float] = None,
-        is_important: list[bool] = None,
-    ) -> list[float]:
+        recency_hours: Optional[List[float]] = None,
+        is_important: Optional[List[bool]] = None,
+    ) -> List[float]:
         """
-        Score multiple chunks.
+        Score multiple chunks efficiently.
         
         Args:
             chunks: List of context chunks
@@ -160,7 +167,34 @@ class RelevanceScorer:
         recency_hours = recency_hours or [0.0] * len(chunks)
         is_important = is_important or [False] * len(chunks)
         
-        return [
-            self.score(c, p, r, i)
-            for c, p, r, i in zip(chunks, prompt, recency_hours, is_important)
-        ]
+        # Use batch scoring with memfas if available and working
+        memfas_scores = None
+        if self.memfas_client and len(chunks) > 1:
+            try:
+                memfas_scores = self.memfas_client.score_chunks(
+                    chunks=chunks,
+                    prompt=prompt,
+                    limit=len(chunks)
+                )
+                # Check if we got valid scores
+                if not memfas_scores or all(s == 0.0 for s in memfas_scores):
+                    memfas_scores = None  # Fall back to keyword overlap
+            except Exception:
+                pass
+        
+        # If memfas didn't work, use keyword overlap for each chunk
+        if memfas_scores is None:
+            memfas_scores = [self._keyword_overlap(c, prompt) for c in chunks]
+        
+        # Compute final scores with bonuses
+        scores = []
+        for i, chunk in enumerate(chunks):
+            memfas_score = memfas_scores[i] if i < len(memfas_scores) else 0.0
+            
+            score = (memfas_score * self.config.memfas_weight)
+            score += recency_hours[i] * self.config.recency_bonus
+            if is_important[i]:
+                score += self.config.importance_bonus
+            scores.append(score)
+            
+        return scores

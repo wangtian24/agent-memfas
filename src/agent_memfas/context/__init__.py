@@ -6,6 +6,7 @@ from .config import ContextConfig
 from .relevance import RelevanceScorer
 from .cold_storage import ColdStorage, DroppedChunk
 from .logger import ContextLogger
+from .memfas_integration import MemfasIntegration, create_memfas_scorer
 
 __all__ = [
     "ContextManager",
@@ -16,4 +17,6 @@ __all__ = [
     "ColdStorage",
     "DroppedChunk",
     "ContextLogger",
+    "MemfasIntegration",
+    "create_memfas_scorer",
 ]

@@ -81,6 +81,8 @@ class ContextManager:
         config_path: Optional[str] = None,
         log_path: Optional[str] = None,
         cold_storage_path: Optional[str] = None,
+        memfas_memory_path: Optional[str] = None,
+        memfas_backend: str = "fts5",
         # Callbacks for agent integration
         get_context: Optional[Callable[[], list[str]]] = None,
         set_context: Optional[Callable[[list[str]], None]] = None,
@@ -95,6 +97,8 @@ class ContextManager:
             config_path: Path to context config YAML
             log_path: Path to log directory
             cold_storage_path: Path to cold storage directory
+            memfas_memory_path: Path to memfas memory for similarity scoring
+            memfas_backend: Search backend type ("fts5" or "embedding")
             get_context: Callback to get current context strings
             set_context: Callback to replace context
             get_token_count: Callback to count tokens
@@ -111,8 +115,20 @@ class ContextManager:
         self.get_token_count = get_token_count or (lambda: 0)
         self.get_messages = get_messages or (lambda n: [])
         
+        # Initialize memfas integration for relevance scoring
+        memfas_client = None
+        if memfas_memory_path:
+            try:
+                from .memfas_integration import MemfasIntegration
+                memfas_client = MemfasIntegration(
+                    memory_path=memfas_memory_path,
+                    backend_type=memfas_backend
+                )
+            except Exception as e:
+                print(f"Warning: Could not initialize memfas integration: {e}")
+        
         # Sub-components
-        self.scorer = RelevanceScorer(self.config)
+        self.scorer = RelevanceScorer(self.config, memfas_client=memfas_client)
         self.cold_storage = ColdStorage(self.cold_storage_path)
         self.logger = ContextLogger(self.log_path)
         
