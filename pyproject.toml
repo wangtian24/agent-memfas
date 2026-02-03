@@ -52,6 +52,9 @@ dev = [
     "pyyaml>=6.0",
     "tiktoken>=0.5.0",
 ]
+context = [
+    "pyyaml>=6.0",
+]
 
 [project.scripts]
 memfas = "agent_memfas.cli:main"
