@@ -201,7 +201,7 @@ class ContextManager:
         Perform context compaction.
         
         Scores all chunks for relevance, drops low-score chunks,
-        summarizes medium chunks using MiniMax.
+        summarizes medium chunks using configured summarizer backend.
         
         Returns:
             CompactionResult with metrics
@@ -213,15 +213,24 @@ class ContextManager:
         summarizer = None
         if self.config.summarize_medium_chunks:
             try:
-                from .summarizer import MiniMaxSummarizer
+                from .summarizer import create_summarizer
                 import os
+                
+                # Get API key from env or use no-op
                 api_key = os.getenv("MINIMAX_API_KEY", "")
+                
+                # Use the factory to create appropriate summarizer
+                # Can add config for backend type later
                 if api_key:
-                    summarizer = MiniMaxSummarizer(
+                    summarizer = create_summarizer(
+                        backend="minimax",
                         api_key=api_key,
                         model=self.config.summary_model,
                         target_tokens=self.config.summary_target_tokens
                     )
+                else:
+                    # No API key, use no-op summarizer
+                    summarizer = create_summarizer(backend="none")
             except Exception as e:
                 print(f"Warning: Could not initialize summarizer: {e}")
         
@@ -253,7 +262,7 @@ class ContextManager:
                 prompt_at_drop=self._current_prompt or ""
             )
             
-        # Summarize medium chunks using MiniMax
+        # Summarize medium chunks using configured backend
         summarized = []
         if summarizer and summarize:
             try:

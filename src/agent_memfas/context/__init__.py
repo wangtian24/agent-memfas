@@ -7,7 +7,13 @@ from .relevance import RelevanceScorer
 from .cold_storage import ColdStorage, DroppedChunk
 from .logger import ContextLogger
 from .memfas_integration import MemfasIntegration, create_memfas_scorer
-from .summarizer import MiniMaxSummarizer, create_summarizer
+from .summarizer import (
+    Summarizer,           # Abstract base class
+    NoOpSummarizer,       # Pass-through
+    MiniMaxSummarizer,    # MiniMax implementation
+    create_summarizer,    # Factory function
+)
+from .minimax_summarizer import create_minimax_summarizer
 
 __all__ = [
     "ContextManager",
@@ -20,6 +26,9 @@ __all__ = [
     "ContextLogger",
     "MemfasIntegration",
     "create_memfas_scorer",
-    "MiniMaxSummarizer",
-    "create_summarizer",
+    "Summarizer",           # Abstract base class
+    "NoOpSummarizer",       # Pass-through
+    "MiniMaxSummarizer",    # MiniMax implementation
+    "create_summarizer",    # Factory function
+    "create_minimax_summarizer",
 ]
