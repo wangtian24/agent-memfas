@@ -201,13 +201,29 @@ class ContextManager:
         Perform context compaction.
         
         Scores all chunks for relevance, drops low-score chunks,
-        summarizes medium chunks.
+        summarizes medium chunks using MiniMax.
         
         Returns:
             CompactionResult with metrics
         """
         context = self.get_context()
         tokens_before = self._token_count
+        
+        # Initialize summarizer if enabled
+        summarizer = None
+        if self.config.summarize_medium_chunks:
+            try:
+                from .summarizer import MiniMaxSummarizer
+                import os
+                api_key = os.getenv("MINIMAX_API_KEY", "")
+                if api_key:
+                    summarizer = MiniMaxSummarizer(
+                        api_key=api_key,
+                        model=self.config.summary_model,
+                        target_tokens=self.config.summary_target_tokens
+                    )
+            except Exception as e:
+                print(f"Warning: Could not initialize summarizer: {e}")
         
         # Score all chunks
         scored_chunks = []
@@ -237,10 +253,25 @@ class ContextManager:
                 prompt_at_drop=self._current_prompt or ""
             )
             
-        # Summarize medium chunks (placeholder - needs MiniMax)
+        # Summarize medium chunks using MiniMax
         summarized = []
-        if self.config.summarize_medium_chunks and summarize:
-            # TODO: Call MiniMax to summarize
+        if summarizer and summarize:
+            try:
+                # Get chunk contents for summarization
+                chunk_texts = [chunk for _, chunk in summarize]
+                # Summarize all medium chunks
+                summaries = summarizer.summarize_batch(
+                    chunks=chunk_texts,
+                    prompt=self._current_prompt or ""
+                )
+                # Pair with original indices
+                for (idx, _), summary in zip(summarize, summaries):
+                    summarized.append((idx, summary))
+            except Exception as e:
+                print(f"Summarization error: {e}, using placeholders")
+                summarized = [(idx, f"[SUMMARIZED: {len(summarize)} chunks]") for idx, _ in summarize]
+        elif summarize:
+            # Fallback if no summarizer
             summarized = [(idx, f"[SUMMARIZED: {len(summarize)} chunks]") for idx, _ in summarize]
             
         # Build new context

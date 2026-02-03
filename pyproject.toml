@@ -54,6 +54,7 @@ dev = [
 ]
 context = [
     "pyyaml>=6.0",
+    "httpx>=0.25.0",
 ]
 
 [project.scripts]
