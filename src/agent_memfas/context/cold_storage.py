@@ -122,63 +122,93 @@ class ColdStorage:
         return str(chunk_path)
     
     def _add_to_index(self, chunk: DroppedChunk):
-        """Add chunk to search index."""
+        """Add chunk to search index (stopwords filtered at write time)."""
         with open(self.index_path, "a") as f:
+            keywords = [
+                w.lower() for w in chunk.content.split()[:100]
+                if w.lower() not in self._STOPWORDS and len(w) > 2
+            ]
             index_entry = {
                 "chunk_id": chunk.chunk_id,
                 "session_id": chunk.session_id,
                 "timestamp": chunk.timestamp,
                 "recoverable_until": chunk.recoverable_until,
-                # Simple keyword index
-                "keywords": list(set(
-                    w.lower() for w in chunk.content.split()[:100]
-                )),
+                "keywords": list(set(keywords)),
             }
             f.write(json.dumps(index_entry) + "\n")
     
+    # Common English stopwords — filtered out of queries and index keywords
+    _STOPWORDS = {
+        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+        'should', 'may', 'might', 'must', 'can', 'to', 'of', 'in', 'for',
+        'on', 'with', 'at', 'by', 'from', 'as', 'and', 'but', 'or', 'not',
+        'this', 'that', 'it', 'i', 'you', 'we', 'they', 'he', 'she', 'my',
+        'your', 'his', 'her', 'our', 'its', 'what', 'which', 'who', 'how',
+        'when', 'where', 'why', 'if', 'so', 'no', 'up', 'out', 'about',
+    }
+    
     def search_recover(self, query: str, limit: int = 5) -> list[str]:
         """
-        Search cold storage for relevant chunks.
+        Search cold storage for relevant chunks, ranked by match quality.
+        
+        Filters stopwords, scores by Jaccard overlap of meaningful keywords,
+        and returns results sorted best-match-first.
         
         Args:
             query: Search query
             limit: Maximum results to return
             
         Returns:
-            List of recovered content strings
+            List of recovered content strings, ranked by relevance
         """
-        # Simple keyword search
-        query_words = set(query.lower().split())
-        results = []
-        
         if not self.index_path.exists():
             return []
-            
+        
+        # Tokenize query, strip stopwords
+        query_words = {
+            w for w in query.lower().split()
+            if w not in self._STOPWORDS and len(w) > 2
+        }
+        if not query_words:
+            return []
+        
+        # Score all index entries
+        candidates = []  # (score, chunk_path, entry)
+        
         with open(self.index_path) as f:
             for line in f:
                 entry = json.loads(line)
+                keywords = set(entry.get("keywords", [])) - self._STOPWORDS
+                if not keywords:
+                    continue
                 
-                # Check if query words match keywords
-                keywords = set(entry.get("keywords", []))
-                if keywords & query_words:
-                    # Load the actual chunk
-                    chunk_path = (
-                        self.storage_path / 
-                        entry["session_id"] / 
-                        f"{entry['chunk_id']}.jsonl"
-                    )
-                    if chunk_path.exists():
-                        with open(chunk_path) as cf:
-                            chunk = DroppedChunk.from_dict(
-                                json.loads(cf.readline())
-                            )
-                            # Check if still recoverable
-                            if datetime.fromisoformat(chunk.recoverable_until) > datetime.now():
-                                results.append(chunk.content)
-                                
-                if len(results) >= limit:
-                    break
-                    
+                # Jaccard-like overlap: |intersection| / |union|
+                intersection = keywords & query_words
+                if not intersection:
+                    continue
+                union = keywords | query_words
+                score = len(intersection) / len(union)
+                
+                chunk_path = (
+                    self.storage_path /
+                    entry["session_id"] /
+                    f"{entry['chunk_id']}.jsonl"
+                )
+                if chunk_path.exists():
+                    candidates.append((score, chunk_path))
+        
+        # Sort by score descending, take top-N
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        results = []
+        for _score, chunk_path in candidates[:limit]:
+            with open(chunk_path) as cf:
+                chunk = DroppedChunk.from_dict(json.loads(cf.readline()))
+            # Check if still recoverable
+            if datetime.fromisoformat(chunk.recoverable_until) > datetime.now():
+                results.append(chunk.content)
+        
         return results
     
     def archive_session(
@@ -225,11 +255,14 @@ class ColdStorage:
         return archived
     
     def count(self) -> int:
-        """Return count of stored chunks."""
+        """Return count of stored chunk files (excludes messages.jsonl)."""
         count = 0
         for session_dir in self.storage_path.iterdir():
             if session_dir.is_dir():
-                count += len(list(session_dir.glob("*.jsonl")))
+                count += len([
+                    f for f in session_dir.glob("*.jsonl")
+                    if f.name != "messages.jsonl"
+                ])
         return count
     
     def cleanup_expired(self) -> int:

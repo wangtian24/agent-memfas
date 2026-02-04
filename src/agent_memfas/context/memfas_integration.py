@@ -71,7 +71,13 @@ class MemfasIntegration:
         limit: int = 5,
     ) -> List[float]:
         """
-        Score multiple chunks for relevance to prompt.
+        Score multiple chunks for relevance to prompt using embedding similarity.
+        
+        Each chunk is scored independently against the prompt by searching
+        memfas with the chunk content and checking how well it aligns,
+        OR by directly computing embedding cosine similarity if available.
+        
+        Falls back to keyword overlap if embeddings unavailable.
         
         Args:
             chunks: List of context chunks
@@ -79,7 +85,7 @@ class MemfasIntegration:
             limit: Maximum chunks to search for
             
         Returns:
-            List of relevance scores (0.0 to 1.0+)
+            List of relevance scores (0.0 to 1.0)
         """
         if not chunks:
             return []
@@ -87,35 +93,67 @@ class MemfasIntegration:
         try:
             memory = self._get_memory()
             
-            # Search for relevant chunks
-            # memfas returns SearchResult with score
-            results: List["SearchResult"] = memory.search(
-                query=prompt,
-                limit=min(limit, len(chunks))
-            )
+            # If embedding backend is available, use direct cosine similarity
+            if hasattr(memory, '_embedder') and memory._embedder is not None:
+                return self._score_with_embeddings(memory, chunks, prompt)
             
-            # Create score map from results
-            # Map source/chunk_id to score
-            score_map = {}
-            for result in results:
-                source = getattr(result, 'source', '') or getattr(result, 'metadata', {}).get('source', '')
-                score = getattr(result, 'score', 0.5)
-                if source:
-                    score_map[source] = score
-            
-            # Score each chunk
-            scores = []
-            for i, chunk in enumerate(chunks):
-                chunk_id = f"chunk_{i}"
-                score = score_map.get(chunk_id, 0.0)
-                scores.append(score)
-                
-            return scores
+            # Fallback: score each chunk by searching memfas with it
+            # and seeing if the prompt appears in results
+            return self._score_with_search(memory, chunks, prompt, limit)
             
         except Exception as e:
-            # Return fallback scores on error
             print(f"memfas scoring error: {e}, using fallback")
             return [0.0] * len(chunks)
+    
+    def _score_with_embeddings(self, memory, chunks: List[str], prompt: str) -> List[float]:
+        """Score chunks using direct embedding cosine similarity."""
+        import numpy as np
+        
+        embedder = memory._embedder
+        
+        # Embed the prompt once
+        prompt_emb = embedder.embed(prompt)
+        prompt_arr = np.array(prompt_emb, dtype=np.float32)
+        prompt_norm = np.linalg.norm(prompt_arr)
+        if prompt_norm == 0:
+            return [0.0] * len(chunks)
+        prompt_arr = prompt_arr / prompt_norm
+        
+        scores = []
+        for chunk in chunks:
+            # Truncate very long chunks to first ~500 words for embedding
+            chunk_text = " ".join(chunk.split()[:500])
+            chunk_emb = embedder.embed(chunk_text)
+            chunk_arr = np.array(chunk_emb, dtype=np.float32)
+            chunk_norm = np.linalg.norm(chunk_arr)
+            if chunk_norm == 0:
+                scores.append(0.0)
+                continue
+            chunk_arr = chunk_arr / chunk_norm
+            similarity = float(np.dot(prompt_arr, chunk_arr))
+            scores.append(max(0.0, similarity))  # clamp negatives
+            
+        return scores
+    
+    def _score_with_search(self, memory, chunks: List[str], prompt: str, limit: int) -> List[float]:
+        """Fallback: use FTS5 search to approximate relevance."""
+        scores = []
+        for chunk in chunks:
+            # Search memfas using a blend of prompt + chunk keywords
+            # Use first 50 words of chunk as query context
+            chunk_words = chunk.split()[:50]
+            query = prompt + " " + " ".join(chunk_words)
+            try:
+                results = memory.search(query=query, limit=1)
+                if results:
+                    # Normalize: memfas scores vary by backend
+                    raw_score = getattr(results[0], 'score', 0.0)
+                    scores.append(min(raw_score, 1.0))
+                else:
+                    scores.append(0.0)
+            except Exception:
+                scores.append(0.0)
+        return scores
     
     def find_relevant(
         self,

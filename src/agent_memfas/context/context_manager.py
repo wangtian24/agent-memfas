@@ -132,10 +132,35 @@ class ContextManager:
         self.cold_storage = ColdStorage(self.cold_storage_path)
         self.logger = ContextLogger(self.log_path)
         
+        # Initialize summarizer once (not per-compact)
+        self.summarizer = self._init_summarizer()
+        
         # State
         self._token_count = 0
         self._last_status: Optional[ContextStatus] = None
         self._current_prompt: str = ""
+        self._session_id: str = f"session_{int(time.time())}"
+    
+    def _init_summarizer(self):
+        """Initialize summarizer based on config. Called once at startup."""
+        if not self.config.summarize_medium_chunks:
+            return None
+        try:
+            from .summarizer import create_summarizer
+            import os
+            api_key = os.getenv("MINIMAX_API_KEY", "")
+            if api_key:
+                return create_summarizer(
+                    backend="minimax",
+                    api_key=api_key,
+                    model=self.config.summary_model,
+                    target_tokens=self.config.summary_target_tokens,
+                )
+            else:
+                return create_summarizer(backend="none")
+        except Exception as e:
+            print(f"Warning: Could not initialize summarizer: {e}")
+            return None
         
     def on_message(self, message: str, context: list[str]):
         """
@@ -203,47 +228,35 @@ class ContextManager:
         Scores all chunks for relevance, drops low-score chunks,
         summarizes medium chunks using configured summarizer backend.
         
+        Preserves original chunk ordering in the output.
+        Enforces min_chunks_to_keep: if too many would be dropped,
+        the lowest-scoring chunks are promoted to "summarize" instead.
+        
         Returns:
             CompactionResult with metrics
         """
         context = self.get_context()
         tokens_before = self._token_count
         
-        # Initialize summarizer if enabled
-        summarizer = None
-        if self.config.summarize_medium_chunks:
-            try:
-                from .summarizer import create_summarizer
-                import os
-                
-                # Get API key from env or use no-op
-                api_key = os.getenv("MINIMAX_API_KEY", "")
-                
-                # Use the factory to create appropriate summarizer
-                # Can add config for backend type later
-                if api_key:
-                    summarizer = create_summarizer(
-                        backend="minimax",
-                        api_key=api_key,
-                        model=self.config.summary_model,
-                        target_tokens=self.config.summary_target_tokens
-                    )
-                else:
-                    # No API key, use no-op summarizer
-                    summarizer = create_summarizer(backend="none")
-            except Exception as e:
-                print(f"Warning: Could not initialize summarizer: {e}")
+        if not context:
+            return CompactionResult(
+                tokens_before=tokens_before,
+                tokens_after=tokens_before,
+                chunks_dropped=0,
+                chunks_summarized=0,
+                token_savings=0,
+            )
         
-        # Score all chunks
+        # Score all chunks (preserving original index)
         scored_chunks = []
         for i, chunk in enumerate(context):
             score = self.scorer.score(chunk, self._current_prompt or "")
             scored_chunks.append((i, chunk, score))
-            
+        
         # Classify chunks
-        keep = []
-        drop = []
-        summarize = []
+        keep = []       # (idx, chunk)
+        drop = []       # (idx, chunk, score)
+        summarize = []  # (idx, chunk)
         
         for idx, chunk, score in scored_chunks:
             if score >= self.config.relevance_keep_threshold:
@@ -252,41 +265,65 @@ class ContextManager:
                 drop.append((idx, chunk, score))
             else:
                 summarize.append((idx, chunk))
-                
-        # Process drops (to cold storage)
+        
+        # Enforce min_chunks_to_keep:
+        # kept + summarized must be >= min_chunks_to_keep
+        # If not, promote the highest-scoring drops to summarize
+        retained_count = len(keep) + len(summarize)
+        if retained_count < self.config.min_chunks_to_keep and drop:
+            # Sort drops by score descending — promote best ones first
+            drop.sort(key=lambda x: x[2], reverse=True)
+            needed = self.config.min_chunks_to_keep - retained_count
+            promoted = drop[:needed]
+            drop = drop[needed:]
+            for idx, chunk, _score in promoted:
+                summarize.append((idx, chunk))
+        
+        # Process drops → cold storage + log each one
         for idx, chunk, score in drop:
-            self.cold_storage.store_dropped(
-                chunk_id=f"chunk_{idx}_{int(time.time())}",
+            chunk_id = f"chunk_{idx}_{int(time.time())}"
+            cold_path = self.cold_storage.store_dropped(
+                chunk_id=chunk_id,
                 content=chunk,
                 relevance_score=score,
-                prompt_at_drop=self._current_prompt or ""
+                prompt_at_drop=self._current_prompt or "",
+                session_id=self._session_id,
             )
-            
-        # Summarize medium chunks using configured backend
-        summarized = []
-        if summarizer and summarize:
+            self.logger.log_drop(
+                chunk_id=chunk_id,
+                session_id=self._session_id,
+                relevance_score=score,
+                reason="low_relevance",
+                cold_storage_path=cold_path,
+            )
+        
+        # Summarize medium chunks
+        summarized = []  # (idx, summary_text)
+        if self.summarizer and summarize:
             try:
-                # Get chunk contents for summarization
                 chunk_texts = [chunk for _, chunk in summarize]
-                # Summarize all medium chunks
-                summaries = summarizer.summarize_batch(
+                summaries = self.summarizer.summarize_batch(
                     chunks=chunk_texts,
-                    prompt=self._current_prompt or ""
+                    prompt=self._current_prompt or "",
                 )
-                # Pair with original indices
                 for (idx, _), summary in zip(summarize, summaries):
                     summarized.append((idx, summary))
             except Exception as e:
-                print(f"Summarization error: {e}, using placeholders")
-                summarized = [(idx, f"[SUMMARIZED: {len(summarize)} chunks]") for idx, _ in summarize]
-        elif summarize:
-            # Fallback if no summarizer
-            summarized = [(idx, f"[SUMMARIZED: {len(summarize)} chunks]") for idx, _ in summarize]
-            
-        # Build new context
-        kept_chunks = [c for _, c in keep]
-        summarized_chunks = [c for _, c in summarized]
-        new_context = kept_chunks + summarized_chunks
+                print(f"Summarization error: {e}, keeping medium chunks as-is")
+                summarized = [(idx, chunk) for idx, chunk in summarize]
+        else:
+            # No summarizer — keep medium chunks unchanged
+            summarized = [(idx, chunk) for idx, chunk in summarize]
+        
+        # Build new context preserving original order
+        # Merge kept and summarized by original index
+        output_map = {}
+        for idx, chunk in keep:
+            output_map[idx] = chunk
+        for idx, text in summarized:
+            output_map[idx] = text
+        
+        new_context = [output_map[idx] for idx in sorted(output_map.keys())]
         
         # Update context via callback
         self.set_context(new_context)
@@ -299,7 +336,7 @@ class ContextManager:
             tokens_after=self._token_count,
             chunks_dropped=len(drop),
             chunks_summarized=len(summarized),
-            token_savings=tokens_before - self._token_count
+            token_savings=tokens_before - self._token_count,
         )
         
         return result

@@ -4,6 +4,7 @@ Relevance scoring for context chunks.
 
 from typing import Optional, List
 import re
+import math
 
 
 class RelevanceScorer:
@@ -12,8 +13,11 @@ class RelevanceScorer:
     
     Formula:
         relevance_score = (memfas_similarity × memfas_weight) +
-                         (recency_hours × RECENCY_BONUS) +
+                         (recency_decay(recency_hours) × RECENCY_BONUS) +
                          (importance_flag × IMPORTANCE_BONUS)
+    
+    Recency decay: exp(-recency_hours / 6) — half-life of ~4 hours.
+    A chunk added 0h ago gets full bonus; 6h ago gets ~37%; 24h ago gets ~2%.
     
     Uses memfas Type 2 search for similarity when available,
     falls back to keyword overlap.
@@ -73,8 +77,11 @@ class RelevanceScorer:
         # Compute final score
         score = (memfas_score * self.config.memfas_weight)
         
-        # Add recency bonus
-        score += recency_hours * self.config.recency_bonus
+        # Add recency bonus — exponential decay, half-life ~4h
+        # recency_hours = hours SINCE chunk was added (0 = just now)
+        # decay = exp(-hours / 6) → 0h=1.0, 6h=0.37, 24h=0.02
+        recency_decay = math.exp(-recency_hours / 6.0)
+        score += recency_decay * self.config.recency_bonus
         
         # Add importance bonus
         if is_important:
@@ -192,7 +199,9 @@ class RelevanceScorer:
             memfas_score = memfas_scores[i] if i < len(memfas_scores) else 0.0
             
             score = (memfas_score * self.config.memfas_weight)
-            score += recency_hours[i] * self.config.recency_bonus
+            # Exponential recency decay (same as score())
+            recency_decay = math.exp(-recency_hours[i] / 6.0)
+            score += recency_decay * self.config.recency_bonus
             if is_important[i]:
                 score += self.config.importance_bonus
             scores.append(score)
