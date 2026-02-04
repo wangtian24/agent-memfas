@@ -49,6 +49,15 @@ Agent: "I apologize, but I don't have context about what project..."
   - Per-query level override
   - `auto` level ready for smart selection
 
+- **[v0.4] Context Management**
+  - Pre-emptive compaction — triggers at 50%, not 90%
+  - Three-way classification — KEEP / SUMMARIZE / DROP
+  - Relevance scoring — embeddings + keyword fallback + recency decay
+  - Cold storage — dropped chunks recoverable for 30 days
+  - Pluggable summarization — MiniMax API or custom backends
+  - Full observability — JSONL logging for all events
+  - Agent-agnostic — plugs into any agent loop via callbacks
+
 ---
 
 ## 🚀 Quick Start
@@ -59,6 +68,7 @@ Agent: "I apologize, but I don't have context about what project..."
 pip install agent-memfas                 # Core (FTS5, zero deps)
 pip install agent-memfas[embeddings]     # + semantic search
 pip install agent-memfas[v3]             # + dynamic curation
+pip install agent-memfas[context]        # + context management (v0.4)
 pip install agent-memfas[all]            # Everything
 ```
 
@@ -136,6 +146,41 @@ print(f"Saved: {result.tokens_saved} ({result.compression_ratio:.0%})")
 print(result.context)  # Inject this into your prompt
 ```
 
+### With Context Management (v0.4+)
+
+```python
+from agent_memfas.context import ContextManager
+
+# Initialize with callbacks for your agent's context
+ctx = ContextManager(
+    config_path="./memfas.yaml",
+    memfas_memory_path="./memfas.yaml",   # enables embedding-based scoring
+    get_context=lambda: current_messages,
+    set_context=lambda msgs: replace_messages(msgs),
+    get_token_count=lambda: count_tokens(current_messages),
+    get_messages=lambda n: current_messages[-n:],
+)
+
+# In your agent loop:
+
+# 1. New message arrived
+ctx.on_message(user_message, current_messages)
+ctx.set_current_prompt(user_message)
+
+# 2. Before generating response — checks health, auto-compacts if needed
+status = ctx.before_response(max_tokens=100000)
+print(f"Context: {status.pct_used:.0%} used, compaction: {status.needs_compaction}")
+
+# 3. After response
+ctx.after_response()
+
+# 4. Session ending — archives to cold storage
+ctx.session_end()
+
+# 5. Need something back from cold storage?
+recovered = ctx.recover("what was the database migration plan")
+```
+
 ---
 
 ## 🏗️ Architecture
@@ -143,6 +188,14 @@ print(result.context)  # Inject this into your prompt
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      agent-memfas                           │
+├─────────────────────────────────────────────────────────────┤
+│  v0.4: Context Management                                   │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │ Context  │  │Relevance │  │  Cold    │  │Summarizer│   │
+│  │ Manager  │→ │  Scorer  │→ │ Storage  │→ │ (MiniMax)│   │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
+│       ↓                                                     │
+│  KEEP / SUMMARIZE / DROP → Recoverable for 30 days         │
 ├─────────────────────────────────────────────────────────────┤
 │  v0.3: Context Curation                                     │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
@@ -218,6 +271,24 @@ search:
 | `memfas curate <query>` | Get curated context (v0.3) |
 | `memfas telemetry summary` | View performance stats (v0.3) |
 
+**Context Management (v0.4)** — Python API only for now:
+
+```python
+from agent_memfas.context import ContextManager, ContextConfig
+
+# Status check
+ctx.status()  # Returns ContextStatus with tokens, chunks, pct_used
+
+# Manual compaction
+result = ctx.compact()  # Returns CompactionResult
+
+# Cold storage recovery
+chunks = ctx.recover("database migration")
+
+# Health metrics
+ctx.health_check()  # Dict with tokens, cold storage count, config
+```
+
 ### Embedder Options
 
 | Embedder | Install | Model | Notes |
@@ -280,17 +351,46 @@ Context: "Let's continue the project discussion"
 Result: 84% token reduction, focused context
 ```
 
+### v0.4: Context Management
+
+```
+Context window at 50% capacity
+                    ↓
+┌─────────────────────────────────────┐
+│ 1. Score each chunk:                │
+│    score = (embedding_sim × 0.6)    │
+│          + (recency_decay × 0.2)    │
+│          + (importance × 0.1)       │
+│                                     │
+│ 2. Classify:                        │
+│    ≥ 0.7  → KEEP                    │
+│    0.3-0.7 → SUMMARIZE (MiniMax)    │
+│    ≤ 0.3  → DROP to cold storage    │
+│                                     │
+│ 3. Enforce min_chunks_to_keep       │
+│ 4. Log all drops for debugging      │
+└─────────────────────────────────────┘
+                    ↓
+Result: Pre-emptive compaction, recoverable drops
+```
+
+**Recency decay:** Exponential with ~4h half-life. A chunk added 6h ago retains 37% of recency bonus.
+
+**Cold storage recovery:** Jaccard-ranked search with stopword filtering. Chunks recoverable for 30 days.
+
 ---
 
 ## 🧪 Performance
 
-| Metric | v0.1 | v0.2 | v0.3 |
-|--------|------|------|------|
-| Trigger lookup | O(1) | O(1) | O(1) |
-| FTS5 search | O(log n) | O(log n) | O(log n) |
-| Embedding search | - | O(n) | O(n) cached |
-| Token reduction | - | - | **84%** |
-| Warm query latency | - | - | **8ms** (296x speedup) |
+| Metric | v0.1 | v0.2 | v0.3 | v0.4 |
+|--------|------|------|------|------|
+| Trigger lookup | O(1) | O(1) | O(1) | O(1) |
+| FTS5 search | O(log n) | O(log n) | O(log n) | O(log n) |
+| Embedding search | - | O(n) | O(n) cached | O(n) cached |
+| Token reduction | - | - | **84%** | dynamic |
+| Warm query latency | - | - | **8ms** | **<10ms** |
+| Cold storage recovery | - | - | - | Jaccard O(n) |
+| Summarization | - | - | - | MiniMax API |
 
 ---
 
@@ -313,7 +413,7 @@ After compaction:
 ### Custom Agents
 
 ```python
-# In your agent loop
+# In your agent loop — with v0.3 Curation
 from agent_memfas.v3 import ContextCurator
 
 curator = ContextCurator("./memfas.yaml")
@@ -333,6 +433,72 @@ def get_response(user_message):
 User: {user_message}
 """
     return llm.complete(prompt)
+```
+
+### Full Agent Loop with Context Management (v0.4)
+
+```python
+from agent_memfas.context import ContextManager
+
+class Agent:
+    def __init__(self):
+        self.messages = []
+        self.ctx = ContextManager(
+            config_path="./memfas.yaml",
+            memfas_memory_path="./memfas.yaml",
+            get_context=lambda: self.messages,
+            set_context=lambda m: setattr(self, 'messages', m),
+            get_token_count=lambda: sum(len(m['content'])//4 for m in self.messages),
+            get_messages=lambda n: self.messages[-n:],
+        )
+    
+    def handle_message(self, user_input: str) -> str:
+        self.messages.append({"role": "user", "content": user_input})
+        
+        # Pre-response: check health, auto-compact if needed
+        self.ctx.set_current_prompt(user_input)
+        status = self.ctx.before_response(max_tokens=100000)
+        
+        # Generate response (your LLM call here)
+        response = self.generate(self.messages)
+        self.messages.append({"role": "assistant", "content": response})
+        
+        self.ctx.after_response()
+        return response
+    
+    def end_session(self):
+        self.ctx.session_end()  # Archives to cold storage
+```
+
+### Context Config (v0.4)
+
+Add to your `memfas.yaml`:
+
+```yaml
+context:
+  compaction_trigger_pct: 0.50    # Trigger early at 50%
+  relevance_cutoff: 0.3           # DROP below this score
+  relevance_keep_threshold: 0.7   # KEEP above this score
+  min_chunks_to_keep: 5           # Safety floor
+  
+  # Scoring weights
+  memfas_weight: 0.6              # Embedding similarity weight
+  recency_bonus: 0.2              # Max recency boost (decays over ~4h)
+  importance_bonus: 0.1           # Flat boost for important chunks
+  
+  # Cold storage
+  cold_storage_enabled: true
+  cold_storage_path: "./cold-storage/"
+  recoverable_days: 30
+  
+  # Summarization (optional)
+  summarize_medium_chunks: true
+  summary_model: "minimax/MiniMax-M2.1"  # Set MINIMAX_API_KEY env var
+  
+  # Logging
+  log_path: "./logs/context/"
+  log_compaction: true
+  log_drops: true
 ```
 
 ---

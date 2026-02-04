@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-memfas"
-version = "0.3.1"
+version = "0.4.0"
 description = "Memory Fast and Slow for AI Agents"
 readme = "README.md"
 license = {text = "MIT"}
@@ -40,12 +40,17 @@ v3 = [
     "fastembed>=0.2.0",
     "sqlite-vec>=0.1.0",
 ]
+context = [
+    "pyyaml>=6.0",
+    "httpx>=0.25.0",
+]
 all = [
     "pyyaml>=6.0",
     "fastembed>=0.2.0",
     "sqlite-vec>=0.1.0",
     "requests>=2.28.0",
     "tiktoken>=0.5.0",
+    "httpx>=0.25.0",
 ]
 dev = [
     "pytest>=7.0",
