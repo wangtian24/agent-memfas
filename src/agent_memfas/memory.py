@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Optional, Union, List, TYPE_CHECKING
 from dataclasses import dataclass
 
-from .config import Config, TriggerConfig
+from .config import Config, TriggerConfig, ExternalSourceConfig
 from .search.base import SearchBackend, SearchResult
 from .search.fts5 import FTS5Backend
 
@@ -98,6 +98,22 @@ def _create_backend(
         )
 
 
+def _create_external_backend(ext: ExternalSourceConfig) -> SearchBackend:
+    """Instantiate an external search backend from config."""
+    if ext.type == "journal":
+        from .search.journal import JournalSearchBackend
+        year_range = tuple(ext.year_range) if ext.year_range else None
+        return JournalSearchBackend(
+            db_path=ext.db_path,
+            embedder_model=ext.embedder_model,
+            ollama_url=ext.ollama_url,
+            label=ext.label,
+            year_range=year_range,
+        )
+    else:
+        raise ValueError(f"Unknown external source type: {ext.type}")
+
+
 class Memory:
     """
     Dual-store memory system for AI agents.
@@ -142,7 +158,16 @@ class Memory:
         # Initialize search backend
         self._backend = _create_backend(self.config, search_backend, embedder)
         self._embedder = embedder
-        
+
+        # External backends (read-only sources like journal)
+        self._external_backends: list[tuple[ExternalSourceConfig, SearchBackend]] = []
+        for ext in self.config.external_sources:
+            try:
+                backend = _create_external_backend(ext)
+                self._external_backends.append((ext, backend))
+            except Exception as e:
+                print(f"Warning: Failed to init external source '{ext.label}': {e}")
+
         # Triggers DB (separate from search backend)
         self._conn: Optional[sqlite3.Connection] = None
         self._ensure_triggers_db()
@@ -200,6 +225,8 @@ class Memory:
             self._conn.close()
             self._conn = None
         self._backend.close()
+        for _, ext_backend in self._external_backends:
+            ext_backend.close()
     
     # ============ Type 1: Fast (Keyword Triggers) ============
     
@@ -344,8 +371,27 @@ class Memory:
             )
             results.extend(search_results)
         
+        # Type 2+: Query external backends (journal, etc.)
+        external_results: list[tuple[str, list[MemoryResult]]] = []
+        for ext_cfg, ext_backend in self._external_backends:
+            try:
+                ext_search = ext_backend.search(context, limit=ext_cfg.max_results)
+                ext_memories = [
+                    MemoryResult(
+                        source=r.source,
+                        text=r.text,
+                        score=r.score,
+                        date=r.date,
+                    )
+                    for r in ext_search
+                ]
+                if ext_memories:
+                    external_results.append((ext_cfg.label, ext_memories))
+            except Exception as e:
+                print(f"Warning: External source '{ext_cfg.label}' search failed: {e}")
+
         # Format output
-        if not results:
+        if not results and not external_results:
             return ""
         
         output_parts = ["📚 Memory Context:\n"]
@@ -363,6 +409,15 @@ class Memory:
             output_parts.append("\n**Related Memories:**")
             for r in searched:
                 output_parts.append(str(r))
+
+        # External sources (journal, etc.) — clearly labeled
+        for label, ext_memories in external_results:
+            output_parts.append(f"\n**📖 {label}:**")
+            for r in ext_memories:
+                date_str = f"[{r.date}]" if r.date else ""
+                sim_str = f"sim={r.score:.2f}" if r.score else ""
+                preview = r.text.replace("\n", " ").strip()[:200]
+                output_parts.append(f"  {date_str} {sim_str}\n    {preview}...")
         
         return "\n".join(output_parts)
     
@@ -471,11 +526,19 @@ class Memory:
         cur.execute("SELECT COUNT(*) FROM keyword_triggers")
         trigger_count = cur.fetchone()[0]
         
+        external = {}
+        for ext_cfg, ext_backend in self._external_backends:
+            try:
+                external[ext_cfg.label] = ext_backend.count()
+            except Exception:
+                external[ext_cfg.label] = "?"
+        
         return {
             "memories": self._backend.count(),
             "triggers": trigger_count,
             "backend": type(self._backend).__name__,
-            "db_path": self.config.db_path
+            "db_path": self.config.db_path,
+            "external_sources": external,
         }
     
     def suggest_triggers(self, min_occurrences: int = 3, limit: int = 20) -> list[dict]:

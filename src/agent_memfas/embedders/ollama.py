@@ -43,14 +43,11 @@ class OllamaEmbedder(Embedder):
             model: Model name (default: nomic-embed-text)
             base_url: Ollama API URL (default: http://localhost:11434)
         """
-        try:
-            import requests
-            self._requests = requests
-        except ImportError:
-            raise ImportError(
-                "requests not installed. Install with: pip install requests"
-            )
-        
+        import json as _json
+        import urllib.request as _urllib
+        self._json = _json
+        self._urllib = _urllib
+
         self.model = model
         self.base_url = base_url.rstrip("/")
         self._dimensions = self.MODEL_DIMS.get(model, 768)
@@ -60,14 +57,14 @@ class OllamaEmbedder(Embedder):
         return self._dimensions
     
     def embed(self, text: str) -> List[float]:
-        """Embed single text via Ollama API."""
-        resp = self._requests.post(
+        """Embed single text via Ollama API (stdlib urllib, zero deps)."""
+        req = self._urllib.Request(
             f"{self.base_url}/api/embeddings",
-            json={"model": self.model, "prompt": text},
-            timeout=30
+            data=self._json.dumps({"model": self.model, "prompt": text}).encode(),
+            headers={"Content-Type": "application/json"},
         )
-        resp.raise_for_status()
-        return resp.json()["embedding"]
+        resp = self._json.loads(self._urllib.urlopen(req, timeout=30).read())
+        return resp["embedding"]
     
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Embed multiple texts (sequential, Ollama doesn't batch)."""

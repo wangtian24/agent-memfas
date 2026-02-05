@@ -37,6 +37,24 @@ class SearchConfig:
 
 
 @dataclass
+class ExternalSourceConfig:
+    """
+    Configuration for a read-only external search source.
+
+    These are pre-indexed DBs that get queried during recall()
+    but are NOT indexed by memfas itself (e.g. a journal with
+    pre-computed embeddings).
+    """
+    type: str                          # "journal" (extensible)
+    db_path: str                       # Path to the SQLite DB
+    label: str = "external"            # Display label in recall output
+    max_results: int = 3               # How many results to surface
+    embedder_model: str = "nomic-embed-text"
+    ollama_url: str = "http://localhost:11434"
+    year_range: Optional[list[int]] = None  # [min_year, max_year] or None
+
+
+@dataclass
 class TriggerConfig:
     """Configuration for a keyword trigger."""
     keyword: str
@@ -52,6 +70,7 @@ class Config:
     triggers: list[TriggerConfig] = field(default_factory=list)
     triggers_file: Optional[str] = None
     search: SearchConfig = field(default_factory=SearchConfig)
+    external_sources: list[ExternalSourceConfig] = field(default_factory=list)
     
     def __post_init__(self):
         """Convert dicts to proper config objects."""
@@ -65,6 +84,10 @@ class Config:
         ]
         if isinstance(self.search, dict):
             self.search = SearchConfig(**self.search)
+        self.external_sources = [
+            ExternalSourceConfig(**e) if isinstance(e, dict) else e
+            for e in self.external_sources
+        ]
     
     @classmethod
     def load(cls, path: str) -> "Config":
@@ -101,12 +124,18 @@ class Config:
         search_data = data.get("search", {})
         search = SearchConfig(**search_data) if isinstance(search_data, dict) else SearchConfig()
         
+        external_sources = [
+            ExternalSourceConfig(**e) if isinstance(e, dict) else e
+            for e in data.get("external_sources", [])
+        ]
+
         return cls(
             db_path=data.get("db_path", "./memfas.db"),
             sources=sources,
             triggers=triggers,
             triggers_file=data.get("triggers_file"),
             search=search,
+            external_sources=external_sources,
         )
     
     @classmethod
@@ -154,7 +183,19 @@ class Config:
                 "min_score": self.search.min_score,
                 "embedder_type": self.search.embedder_type,
                 "embedder_model": self.search.embedder_model,
-            }
+            },
+            "external_sources": [
+                {
+                    "type": e.type,
+                    "db_path": e.db_path,
+                    "label": e.label,
+                    "max_results": e.max_results,
+                    "embedder_model": e.embedder_model,
+                    "ollama_url": e.ollama_url,
+                    "year_range": e.year_range,
+                }
+                for e in self.external_sources
+            ],
         }
     
     def save(self, path: str):
