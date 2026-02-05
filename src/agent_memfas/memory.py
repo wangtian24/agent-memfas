@@ -159,6 +159,16 @@ class Memory:
         self._backend = _create_backend(self.config, search_backend, embedder)
         self._embedder = embedder
 
+        # Parallel vector store (indexes same docs as FTS5, searched alongside)
+        self._vec_backend: Optional[SearchBackend] = None
+        if self.config.search.parallel_vec:
+            from .search.ollama_vec import OllamaVecBackend
+            self._vec_backend = OllamaVecBackend(
+                db_path=self.config.db_path,
+                embedder_model=self.config.search.parallel_vec_model,
+                ollama_url=self.config.search.parallel_vec_ollama_url,
+            )
+
         # External backends (read-only sources like journal)
         self._external_backends: list[tuple[ExternalSourceConfig, SearchBackend]] = []
         for ext in self.config.external_sources:
@@ -225,6 +235,8 @@ class Memory:
             self._conn.close()
             self._conn = None
         self._backend.close()
+        if self._vec_backend:
+            self._vec_backend.close()
         for _, ext_backend in self._external_backends:
             ext_backend.close()
     
@@ -314,7 +326,10 @@ class Memory:
     
     def search(self, query: str, limit: int = None) -> list[MemoryResult]:
         """
-        Search memories using the configured backend.
+        Search memories using the configured backend(s).
+
+        If parallel_vec is enabled, queries both FTS5 and the vector
+        store, deduplicates by doc_id (keeps higher score), returns merged top-N.
         
         Args:
             query: Search query
@@ -325,18 +340,36 @@ class Memory:
         """
         if limit is None:
             limit = self.config.search.max_results
-        
-        search_results = self._backend.search(query, limit)
-        
-        return [
-            MemoryResult(
-                source=r.source,
-                text=r.text,
-                score=r.score,
-                date=r.date
-            )
-            for r in search_results
-        ]
+
+        # Primary backend (FTS5)
+        primary_results = self._backend.search(query, limit)
+
+        if not self._vec_backend:
+            return [
+                MemoryResult(source=r.source, text=r.text, score=r.score, date=r.date)
+                for r in primary_results
+            ]
+
+        # Parallel vec backend
+        vec_results = self._vec_backend.search(query, limit)
+
+        # Merge + dedupe by doc_id, keep highest score
+        best: dict[str, MemoryResult] = {}
+
+        for r in primary_results:
+            doc_id = r.metadata.get("doc_id", f"fts5:{r.source}:{r.text[:50]}")
+            best[doc_id] = MemoryResult(source=r.source, text=r.text, score=r.score, date=r.date)
+
+        for r in vec_results:
+            doc_id = r.metadata.get("doc_id", f"vec:{r.source}:{r.text[:50]}")
+            if doc_id in best:
+                if r.score > best[doc_id].score:
+                    best[doc_id] = MemoryResult(source=r.source, text=r.text, score=r.score, date=r.date)
+            else:
+                best[doc_id] = MemoryResult(source=r.source, text=r.text, score=r.score, date=r.date)
+
+        merged = sorted(best.values(), key=lambda m: m.score, reverse=True)
+        return merged[:limit]
     
     # ============ Combined Recall ============
     
@@ -427,6 +460,12 @@ class Memory:
         """Generate stable document ID."""
         content = f"{source}:{section}:{text[:100]}"
         return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+    def _index_doc(self, doc_id: str, text: str, metadata: dict):
+        """Index a doc into primary backend + parallel vec (if enabled)."""
+        self._backend.index(doc_id, text, metadata)
+        if self._vec_backend:
+            self._vec_backend.index(doc_id, text, metadata)
     
     def index_file(self, path: str, file_type: str = "markdown"):
         """
@@ -468,7 +507,7 @@ class Memory:
         for section, text in chunks:
             if len(text) > 100:
                 doc_id = self._doc_id(source, section, text)
-                self._backend.index(doc_id, text[:10000], {
+                self._index_doc(doc_id, text[:10000], {
                     "source": source,
                     "section": section,
                     "date": datetime.now().isoformat()
@@ -482,7 +521,7 @@ class Memory:
             data = json_lib.loads(content)
             text = json_lib.dumps(data, indent=2)[:10000]
             doc_id = self._doc_id(source, "root", text)
-            self._backend.index(doc_id, text, {
+            self._index_doc(doc_id, text, {
                 "source": source,
                 "section": "root",
                 "date": datetime.now().isoformat()
@@ -498,7 +537,7 @@ class Memory:
             if chunk.strip():
                 section = f"chunk_{i // chunk_size}"
                 doc_id = self._doc_id(source, section, chunk)
-                self._backend.index(doc_id, chunk, {
+                self._index_doc(doc_id, chunk, {
                     "source": source,
                     "section": section,
                     "date": datetime.now().isoformat()
@@ -517,6 +556,8 @@ class Memory:
     def clear(self):
         """Clear all indexed memories (keeps triggers)."""
         self._backend.clear()
+        if self._vec_backend:
+            self._vec_backend.clear()
     
     def stats(self) -> dict:
         """Get memory system statistics."""
@@ -533,13 +574,17 @@ class Memory:
             except Exception:
                 external[ext_cfg.label] = "?"
         
-        return {
-            "memories": self._backend.count(),
+        stats = {
+            "memories_fts5": self._backend.count(),
             "triggers": trigger_count,
             "backend": type(self._backend).__name__,
             "db_path": self.config.db_path,
             "external_sources": external,
         }
+        if self._vec_backend:
+            stats["memories_vec"] = self._vec_backend.count()
+            stats["parallel_vec"] = True
+        return stats
     
     def suggest_triggers(self, min_occurrences: int = 3, limit: int = 20) -> list[dict]:
         """

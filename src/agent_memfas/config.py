@@ -35,6 +35,11 @@ class SearchConfig:
     embedder_type: Optional[str] = None  # "fastembed" or "ollama"
     embedder_model: Optional[str] = None  # e.g. "BAAI/bge-small-en-v1.5"
 
+    # Parallel vector store (runs alongside FTS5, indexes same docs)
+    parallel_vec: bool = False
+    parallel_vec_model: str = "nomic-embed-text"
+    parallel_vec_ollama_url: str = "http://localhost:11434"
+
 
 @dataclass
 class ExternalSourceConfig:
