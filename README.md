@@ -5,6 +5,7 @@
 A dual-store memory system inspired by Kahneman's "Thinking, Fast and Slow" — giving AI agents persistent, intelligent memory that survives context window limits.
 
 [![PyPI version](https://badge.fury.io/py/agent-memfas.svg)](https://badge.fury.io/py/agent-memfas)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
