@@ -11,7 +11,7 @@ def get_embedding_backend():
     from .embedding import EmbeddingBackend
     return EmbeddingBackend
 
-def get_journal_backend():
-    """Get JournalSearchBackend (requires ollama running)."""
-    from .journal import JournalSearchBackend
-    return JournalSearchBackend
+def get_preindexed_vec_backend():
+    """Get PreIndexedVecBackend (requires ollama running)."""
+    from .preindexed_vec import PreIndexedVecBackend
+    return PreIndexedVecBackend

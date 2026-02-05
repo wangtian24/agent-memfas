@@ -100,15 +100,18 @@ def _create_backend(
 
 def _create_external_backend(ext: ExternalSourceConfig) -> SearchBackend:
     """Instantiate an external search backend from config."""
-    if ext.type == "journal":
-        from .search.journal import JournalSearchBackend
-        year_range = tuple(ext.year_range) if ext.year_range else None
-        return JournalSearchBackend(
+    if ext.type == "preindexed_vec":
+        from .search.preindexed_vec import PreIndexedVecBackend
+        return PreIndexedVecBackend(
             db_path=ext.db_path,
+            table=ext.table,
+            key_col=ext.key_col,
+            text_col=ext.text_col,
+            embedding_col=ext.embedding_col,
             embedder_model=ext.embedder_model,
             ollama_url=ext.ollama_url,
             label=ext.label,
-            year_range=year_range,
+            key_filter=ext.key_filter,
         )
     else:
         raise ValueError(f"Unknown external source type: {ext.type}")

@@ -49,14 +49,23 @@ class ExternalSourceConfig:
     These are pre-indexed DBs that get queried during recall()
     but are NOT indexed by memfas itself (e.g. a journal with
     pre-computed embeddings).
+
+    type: "preindexed_vec" — generic pre-indexed embedding table.
+    Table/column names are configurable so any SQLite DB with
+    a packed-float32 embedding column works.
     """
-    type: str                          # "journal" (extensible)
+    type: str                          # "preindexed_vec"
     db_path: str                       # Path to the SQLite DB
     label: str = "external"            # Display label in recall output
     max_results: int = 3               # How many results to surface
     embedder_model: str = "nomic-embed-text"
     ollama_url: str = "http://localhost:11434"
-    year_range: Optional[list[int]] = None  # [min_year, max_year] or None
+    # Table structure — defaults match the standard build-embedding-index layout
+    table: str = "entry_embeddings"
+    key_col: str = "date"              # surfaced as .date in results
+    text_col: str = "text_chunk"
+    embedding_col: str = "embedding"
+    key_filter: Optional[str] = None   # optional SQL WHERE clause
 
 
 @dataclass
@@ -197,7 +206,11 @@ class Config:
                     "max_results": e.max_results,
                     "embedder_model": e.embedder_model,
                     "ollama_url": e.ollama_url,
-                    "year_range": e.year_range,
+                    "table": e.table,
+                    "key_col": e.key_col,
+                    "text_col": e.text_col,
+                    "embedding_col": e.embedding_col,
+                    "key_filter": e.key_filter,
                 }
                 for e in self.external_sources
             ],

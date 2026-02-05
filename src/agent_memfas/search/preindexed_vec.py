@@ -1,10 +1,24 @@
 """
-Journal search backend — read-only, pre-indexed embedding search.
+Generic pre-indexed vector search backend.
 
-Queries an existing journal.db that has been indexed with
-build-embedding-index.py (entry_embeddings table with nomic-embed-text vectors).
+Queries any SQLite DB that has a table with pre-computed embedding blobs.
+Read-only — the embeddings are built externally (e.g. build-embedding-index.py).
+Table structure and column names are fully configurable.
 
-No new deps. Uses ollama HTTP API + stdlib cosine similarity.
+No pip deps. Uses ollama HTTP API (stdlib urllib) + cosine similarity.
+
+Example config (memfas.yaml):
+    external_sources:
+      - type: preindexed_vec
+        db_path: /path/to/some.db
+        label: "My Indexed Data"
+        table: entry_embeddings
+        key_col: date          # surfaced as .date in results
+        text_col: text_chunk   # the text snippet
+        embedding_col: embedding  # BLOB of packed float32
+        embedder_model: nomic-embed-text
+        ollama_url: http://localhost:11434
+        max_results: 3
 """
 
 import json
@@ -16,45 +30,43 @@ from typing import List, Optional, Dict, Any
 from .base import SearchBackend, SearchResult
 
 
-class JournalSearchBackend(SearchBackend):
+class PreIndexedVecBackend(SearchBackend):
     """
-    Read-only search backend over a pre-indexed journal DB.
+    Read-only vector search over a pre-indexed SQLite table.
 
-    Expects a SQLite DB with:
-        - entries (id, date, text, ...)          — the raw journal entries
-        - entry_embeddings (date, text_chunk, embedding BLOB)  — pre-computed vectors
-
-    Usage:
-        backend = JournalSearchBackend(
-            db_path="/path/to/journal.db",
-            embedder_model="nomic-embed-text",
-            ollama_url="http://localhost:11434",
-            label="DayOne Journal",
-        )
-        results = backend.search("running with Guan Lingfeng", limit=3)
+    Args:
+        db_path: Path to SQLite DB.
+        table: Table name containing the embeddings.
+        key_col: Column used as the result identifier (e.g. "date").
+        text_col: Column containing the text.
+        embedding_col: Column containing the embedding BLOB (packed float32).
+        embedder_model: Ollama model name for query embedding.
+        ollama_url: Ollama base URL.
+        label: Display label for results in recall output.
+        key_filter: Optional SQL WHERE clause added to queries (e.g. year filtering).
     """
 
     def __init__(
         self,
         db_path: str,
+        table: str = "entry_embeddings",
+        key_col: str = "date",
+        text_col: str = "text_chunk",
+        embedding_col: str = "embedding",
         embedder_model: str = "nomic-embed-text",
         ollama_url: str = "http://localhost:11434",
-        label: str = "journal",
-        year_range: Optional[tuple[int, int]] = None,
+        label: str = "external",
+        key_filter: Optional[str] = None,
     ):
-        """
-        Args:
-            db_path: Path to the journal SQLite DB (with entry_embeddings).
-            embedder_model: Ollama model name for query embedding.
-            ollama_url: Ollama base URL.
-            label: Label for results (shows up in recall output).
-            year_range: Optional (min_year, max_year) filter. None = all years.
-        """
         self.db_path = db_path
+        self.table = table
+        self.key_col = key_col
+        self.text_col = text_col
+        self.embedding_col = embedding_col
         self.embedder_model = embedder_model
         self.ollama_url = ollama_url.rstrip("/")
         self.label = label
-        self.year_range = year_range
+        self.key_filter = key_filter  # raw SQL WHERE clause, user is responsible
         self._conn: Optional[sqlite3.Connection] = None
 
     # ── connection ────────────────────────────────────────────
@@ -67,7 +79,6 @@ class JournalSearchBackend(SearchBackend):
     # ── embedding ─────────────────────────────────────────────
 
     def _embed(self, text: str) -> list[float]:
-        """Embed text via Ollama HTTP API."""
         req = urllib.request.Request(
             f"{self.ollama_url}/api/embeddings",
             data=json.dumps({"model": self.embedder_model, "prompt": text}).encode(),
@@ -76,7 +87,7 @@ class JournalSearchBackend(SearchBackend):
         resp = json.loads(urllib.request.urlopen(req, timeout=30).read())
         return resp["embedding"]
 
-    # ── cosine ────────────────────────────────────────────────
+    # ── vector helpers ────────────────────────────────────────
 
     @staticmethod
     def _cosine(a: list[float], b: list[float]) -> float:
@@ -93,7 +104,7 @@ class JournalSearchBackend(SearchBackend):
     # ── SearchBackend interface ───────────────────────────────
 
     def search(self, query: str, limit: int = 5) -> List[SearchResult]:
-        """Embed query → cosine similarity against all stored vectors → top-N."""
+        """Embed query → cosine sim against all rows → top-N."""
         if not query.strip():
             return []
 
@@ -101,44 +112,40 @@ class JournalSearchBackend(SearchBackend):
         conn = self._get_conn()
         cur = conn.cursor()
 
-        # Optionally join with entries to filter by year
-        if self.year_range:
-            min_y, max_y = self.year_range
-            cur.execute(
-                "SELECT ee.date, ee.text_chunk, ee.embedding "
-                "FROM entry_embeddings ee "
-                "WHERE CAST(SUBSTR(ee.date, 1, 4) AS INTEGER) BETWEEN ? AND ?",
-                (min_y, max_y),
-            )
-        else:
-            cur.execute("SELECT date, text_chunk, embedding FROM entry_embeddings")
+        # Build query safely — table/col names are set at init, not user input
+        sql = (
+            f"SELECT {self.key_col}, {self.text_col}, {self.embedding_col} "
+            f"FROM {self.table}"
+        )
+        if self.key_filter:
+            sql += f" WHERE {self.key_filter}"
+
+        cur.execute(sql)
 
         scored: list[tuple[float, str, str]] = []
-        for date, text_chunk, blob in cur.fetchall():
+        for key, text, blob in cur.fetchall():
             vec = self._blob_to_vec(blob)
             sim = self._cosine(query_vec, vec)
-            scored.append((sim, date, text_chunk))
+            scored.append((sim, str(key), text))
 
         scored.sort(reverse=True)
 
-        results = []
-        for sim, date, text_chunk in scored[:limit]:
-            results.append(
-                SearchResult(
-                    text=text_chunk,
-                    score=sim,
-                    source=f"{self.label}:{date}",
-                    section=None,
-                    date=date,
-                    metadata={"cosine_sim": sim},
-                )
+        return [
+            SearchResult(
+                text=text,
+                score=sim,
+                source=f"{self.label}:{key}",
+                section=None,
+                date=key,  # key_col value surfaced as date
+                metadata={"cosine_sim": sim, "key": key},
             )
-        return results
+            for sim, key, text in scored[:limit]
+        ]
 
     # ── read-only stubs ───────────────────────────────────────
 
     def index(self, doc_id: str, text: str, metadata: Optional[Dict[str, Any]] = None) -> None:
-        """No-op. Journal is pre-indexed externally."""
+        """No-op. This backend is pre-indexed externally."""
         pass
 
     def delete(self, doc_id: str) -> None:
@@ -154,7 +161,7 @@ class JournalSearchBackend(SearchBackend):
     def count(self) -> int:
         conn = self._get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM entry_embeddings")
+        cur.execute(f"SELECT COUNT(*) FROM {self.table}")
         return cur.fetchone()[0]
 
     def close(self) -> None:
